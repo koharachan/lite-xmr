@@ -23,11 +23,7 @@
 #include "crypto/common/VirtualMemory.h"
 
 
-#if defined(XMRIG_ARM) || defined(XMRIG_RISCV)
-#   include "crypto/cn/CryptoNight_arm.h"
-#else
-#   include "crypto/cn/CryptoNight_x86.h"
-#endif
+#include "crypto/cn/CryptoNight_x86.h"
 
 
 #ifdef XMRIG_ALGO_ARGON2

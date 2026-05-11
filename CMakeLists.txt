@@ -17,12 +17,12 @@ option(WITH_ASM             "Enable ASM PoW implementations" ON)
 option(WITH_MSR             "Enable MSR mod & 1st-gen Ryzen fix" ON)
 option(WITH_ENV_VARS        "Enable environment variables support in config file" ON)
 option(WITH_EMBEDDED_CONFIG "Enable internal embedded JSON config" OFF)
-option(WITH_OPENCL          "Enable OpenCL backend" ON)
+option(WITH_OPENCL          "Enable OpenCL backend" OFF)
 set(WITH_OPENCL_VERSION 200 CACHE STRING "Target OpenCL version")
 set_property(CACHE WITH_OPENCL_VERSION PROPERTY STRINGS 120 200 210 220)
-option(WITH_CUDA            "Enable CUDA backend" ON)
-option(WITH_NVML            "Enable NVML (NVIDIA Management Library) support (only if CUDA backend enabled)" ON)
-option(WITH_ADL             "Enable ADL (AMD Display Library) or sysfs support (only if OpenCL backend enabled)" ON)
+option(WITH_CUDA            "Enable CUDA backend" OFF)
+option(WITH_NVML            "Enable NVML (NVIDIA Management Library) support (only if CUDA backend enabled)" OFF)
+option(WITH_ADL             "Enable ADL (AMD Display Library) or sysfs support (only if OpenCL backend enabled)" OFF)
 option(WITH_STRICT_CACHE    "Enable strict checks for OpenCL cache" ON)
 option(WITH_INTERLEAVE_DEBUG_LOG "Enable debug log for threads interleave" OFF)
 option(WITH_PROFILING       "Enable profiling for developers" OFF)
@@ -66,7 +66,6 @@ set(HEADERS
     src/net/JobResult.h
     src/net/JobResults.h
     src/net/Network.h
-    src/net/strategies/DonateStrategy.h
     src/Summary.h
     src/version.h
    )
@@ -87,19 +86,13 @@ set(HEADERS_CRYPTO
     src/crypto/cn/groestl_tables.h
     src/crypto/cn/hash.h
     src/crypto/cn/skein_port.h
-    src/crypto/cn/soft_aes.h
     src/crypto/common/HugePagesInfo.h
     src/crypto/common/MemoryPool.h
     src/crypto/common/Nonce.h
     src/crypto/common/portable/mm_malloc.h
     src/crypto/common/VirtualMemory.h
+    src/crypto/cn/CryptoNight_x86.h
    )
-
-if (XMRIG_ARM OR XMRIG_RISCV)
-    set(HEADERS_CRYPTO "${HEADERS_CRYPTO}" src/crypto/cn/CryptoNight_arm.h)
-else()
-    set(HEADERS_CRYPTO "${HEADERS_CRYPTO}" src/crypto/cn/CryptoNight_x86.h)
-endif()
 
 set(SOURCES
     "${SOURCES_BASE}"
@@ -113,7 +106,6 @@ set(SOURCES
     src/core/Taskbar.cpp
     src/net/JobResults.cpp
     src/net/Network.cpp
-    src/net/strategies/DonateStrategy.cpp
     src/Summary.cpp
     src/xmrig.cpp
    )
@@ -240,9 +232,7 @@ add_executable(${CMAKE_PROJECT_NAME} ${HEADERS} ${SOURCES} ${SOURCES_OS} ${HEADE
 target_link_libraries(${CMAKE_PROJECT_NAME} ${XMRIG_ASM_LIBRARY} ${OPENSSL_LIBRARIES} ${UV_LIBRARIES} ${EXTRA_LIBS} ${CPUID_LIB} ${ARGON2_LIBRARY} ${ETHASH_LIBRARY} ${GHOSTRIDER_LIBRARY})
 
 if (WIN32)
-    if (NOT ARM_TARGET)
-        add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/bin/WinRing0/WinRing0x64.sys" $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>)
-    endif()
+    add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/bin/WinRing0/WinRing0x64.sys" $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>)
 
     add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/scripts/benchmark_1M.cmd" $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>)
     add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/scripts/benchmark_10M.cmd" $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>)

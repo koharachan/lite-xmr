@@ -1,38 +1,68 @@
-# XMRig
+# lite-xmr
 
-[![Github All Releases](https://img.shields.io/github/downloads/xmrig/xmrig/total.svg)](https://github.com/xmrig/xmrig/releases)
-[![GitHub release](https://img.shields.io/github/release/xmrig/xmrig/all.svg)](https://github.com/xmrig/xmrig/releases)
-[![GitHub Release Date](https://img.shields.io/github/release-date/xmrig/xmrig.svg)](https://github.com/xmrig/xmrig/releases)
-[![GitHub license](https://img.shields.io/github/license/xmrig/xmrig.svg)](https://github.com/xmrig/xmrig/blob/master/LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/xmrig/xmrig.svg)](https://github.com/xmrig/xmrig/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/xmrig/xmrig.svg)](https://github.com/xmrig/xmrig/network)
+轻量级 Monero (XMR) CPU 矿工。基于 XMRig，用 Rust 重写了 CLI 入口和网络层。
 
-XMRig is a high performance, open source, cross platform RandomX, KawPow, CryptoNight and [GhostRider](https://github.com/xmrig/xmrig/tree/master/src/crypto/ghostrider#readme) unified CPU/GPU miner and [RandomX benchmark](https://xmrig.com/benchmark). Official binaries are available for Windows, Linux, macOS and FreeBSD.
+## 特性
 
-## Mining backends
-- **CPU** (x86/x64/ARMv7/ARMv8/RISC-V)
-- **OpenCL** for AMD GPUs.
-- **CUDA** for NVIDIA GPUs via external [CUDA plugin](https://github.com/xmrig/xmrig-cuda).
+- **RandomX** 算法支持，保留 XMRig C++ 高性能挖矿后端
+- **纯 Rust TLS** (rustls + webpki-roots)，无需链接 OpenSSL
+- **完全无抽水**，删除了 XMRig 默认的 1% dev fee
+- 异步 Stratum 协议客户端 (tokio)
 
-## Download
-* **[Binary releases](https://github.com/xmrig/xmrig/releases)**
-* **[Build from source](https://xmrig.com/docs/miner/build)**
+## 快速开始
 
-## Usage
-The preferred way to configure the miner is the [JSON config file](https://xmrig.com/docs/miner/config) as it is more flexible and human friendly. The [command line interface](https://xmrig.com/docs/miner/command-line-options) does not cover all features, such as mining profiles for different algorithms. Important options can be changed during runtime without miner restart by editing the config file or executing [API](https://xmrig.com/docs/miner/api) calls.
+```bash
+cargo build --release
+./target/release/lite-xmr -o pool.supportxmr.com:3333 -u <WALLET_ADDRESS>
+```
 
-* **[Wizard](https://xmrig.com/wizard)** helps you create initial configuration for the miner.
-* **[Workers](http://workers.xmrig.info)** helps manage your miners via HTTP API.
+## 命令行选项
 
-## Donations
-* Default donation 1% (1 minute in 100 minutes) can be increased via option `donate-level` or disabled in source code.
-* XMR: `48edfHu7V9Z84YzzMa6fUueoELZ9ZRXq9VetWzYGzKt52XU5xvqgzYnDK9URnRoJMk1j8nLwEVsaSWJ4fhdUyZijBGUicoD`
+```
+用法: lite-xmr [选项]
 
-## Developers
-* **[xmrig](https://github.com/xmrig)**
-* **[sech1](https://github.com/SChernykh)**
+选项:
+  -o, --url <HOST:PORT>    矿池地址
+  -u, --user <ADDRESS>     钱包地址或用户名
+  -p, --pass <STRING>      矿池密码 (默认: x)
+  -t, --threads <N>        挖矿线程数 (0 = 自动检测)
+      --tls                使用 TLS 连接矿池
+      --config <PATH>      配置文件路径
+      --log-level <LEVEL>  日志级别 (默认: info)
+      --api-bind <ADDR>    HTTP API 监听地址
+      --keepalive          保持连接活跃 (不挖矿)
+  -h, --help               显示帮助信息
+  -v, --version            显示版本号
+```
 
-## Contacts
-* support@xmrig.com
-* [reddit](https://www.reddit.com/user/XMRig/)
-* [twitter](https://twitter.com/xmrig_dev)
+## 构建
+
+需要 Rust 工具链 (1.75+) 和 C++ 编译器。
+
+```bash
+git clone https://github.com/your/lite-xmr
+cd lite-xmr
+cargo build --release
+```
+
+<br />
+
+<br />
+
+## 项目结构
+
+```
+├── crates/
+│   ├── lite-xmr-cli/       # Rust 二进制入口
+│   ├── lite-xmr-core/      # 共享类型、配置、CPU 检测
+│   ├── lite-xmr-miner/     # 挖矿核心 (randomx-rs)
+│   └── lite-xmr-stratum/   # Stratum 协议客户端
+├── src/                    # XMRig C++ 后端 (RandomX 核心)
+├── cmake/                  # CMake 模块
+├── doc/                    # 文档
+└── Cargo.toml              # Rust 工作区
+```
+
+## 许可证
+
+GPL-3.0

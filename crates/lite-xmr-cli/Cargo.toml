@@ -1,0 +1,21 @@
+[package]
+name = "lite-xmr-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lite-xmr"
+path = "src/main.rs"
+
+[dependencies]
+lite-xmr-core = { workspace = true }
+lite-xmr-stratum = { workspace = true }
+lite-xmr-miner = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+pico-args = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"

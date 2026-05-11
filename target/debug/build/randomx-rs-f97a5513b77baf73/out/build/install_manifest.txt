@@ -1,0 +1,2 @@
+/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/lib/librandomx.a
+/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/include/randomx.h

@@ -1,0 +1,10 @@
+running: cd "/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/randomx-rs-1.4.1/RandomX" "-B" "/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/build" "-DDARCH=native" "-DCMAKE_INSTALL_PREFIX=/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_BUILD_TYPE=Debug"
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_ASM_COMPILER
+    CMAKE_ASM_FLAGS
+    DARCH
+
+
+running: cd "/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=8,9 --jobserver-auth=8,9" "cmake" "--build" "/data/user/work/lite-xmr/target/debug/build/randomx-rs-f97a5513b77baf73/out/build" "--target" "install" "--config" "Debug"

@@ -1,0 +1,1 @@
+/usr/bin/c++  -ffunction-sections -fdata-sections -fPIC -m64 -w -maes -g CMakeFiles/randomx-benchmark.dir/src/tests/benchmark.cpp.o CMakeFiles/randomx-benchmark.dir/src/tests/affinity.cpp.o -o randomx-benchmark  librandomx.a 

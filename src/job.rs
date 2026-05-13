@@ -131,6 +131,7 @@ pub struct SubmitResult {
 
 impl SubmitResult {
     /// nonce 采用小写十六进制、宽度 8，即原样填入区块头的 nonce 字节。
+    #[allow(dead_code)]
     pub fn new(job_id: &str, nonce: u32, result: &[u8]) -> Self {
         SubmitResult {
             job_id: job_id.to_string(),

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum Error {
     #[error("配置错误: {0}")]
     Config(String),

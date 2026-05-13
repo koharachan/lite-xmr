@@ -27,6 +27,7 @@ pub struct Job {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum JobParseError {
     MissingField(&'static str),
     InvalidHex(&'static str),
@@ -121,6 +122,7 @@ impl Job {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct SubmitResult {
     pub job_id: String,
     pub nonce: String,

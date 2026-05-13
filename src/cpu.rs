@@ -17,6 +17,7 @@ pub fn os_name() -> &'static str {
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CpuInfo {
     pub brand: String,
     pub logical_cores: usize,

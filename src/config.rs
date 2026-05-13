@@ -129,6 +129,7 @@ fn default_log_level() -> String {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Config {
     pub pool_url: String,
     pub pool_user: String,

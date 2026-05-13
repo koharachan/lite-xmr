@@ -8,6 +8,7 @@ use crate::job::{self, Job};
 use crate::stats::MiningStats;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MinedShare {
     pub job_id: String,
     pub nonce: String,

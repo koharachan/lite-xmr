@@ -220,6 +220,7 @@ impl StratumClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn stop(&self) {
         self.running.store(false, Ordering::Release);
     }

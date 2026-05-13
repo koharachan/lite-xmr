@@ -454,6 +454,7 @@ dependencies = [
  "anyhow",
  "hex",
  "hwlocality",
+ "libc",
  "num_cpus",
  "pico-args",
  "randomx-rs",
@@ -469,6 +470,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "webpki-roots 0.26.11",
 ]
 

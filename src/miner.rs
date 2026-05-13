@@ -1,4 +1,5 @@
 use std::sync::mpsc as std_mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tokio::sync::{mpsc, watch};
@@ -15,14 +16,35 @@ pub struct MinedShare {
     pub result: String,
 }
 
-pub struct MiningPool {
+pub struct Miner {
     thread_count: u32,
     stats: Arc<MiningStats>,
+    #[allow(dead_code)]
+    enabled: AtomicBool,
 }
 
-impl MiningPool {
+impl Miner {
     pub fn new(thread_count: u32, stats: Arc<MiningStats>) -> Self {
-        MiningPool { thread_count, stats }
+        Miner {
+            thread_count,
+            stats,
+            enabled: AtomicBool::new(true),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    #[allow(dead_code)]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    #[allow(dead_code)]
+    pub fn thread_count(&self) -> u32 {
+        self.thread_count
     }
 
     pub async fn start(

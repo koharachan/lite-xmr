@@ -22,6 +22,8 @@ pub struct Args {
     pub log_level: Option<String>,
     pub api_bind: Option<SocketAddr>,
     pub keepalive: bool,
+    pub doh: bool,
+    pub background: bool,
 }
 
 impl Args {
@@ -46,7 +48,9 @@ impl Args {
             config: pargs.opt_value_from_str("--config")?,
             log_level: pargs.opt_value_from_str("--log-level")?,
             api_bind: pargs.opt_value_from_str("--api-bind")?,
-            keepalive: pargs.contains("--keepalive"),
+            keepalive: pargs.contains(["-k", "--keepalive"]),
+            doh: pargs.contains("--doh"),
+            background: pargs.contains(["-B", "--background"]),
         };
 
         let remaining = pargs.finish();
@@ -69,31 +73,18 @@ fn print_usage() {
     println!("  -p, --pass <STRING>      矿池密码 (默认: x)");
     println!("  -t, --threads <N>        挖矿线程数 (0 = 自动检测)");
     println!("      --tls                使用 TLS 连接矿池");
-    println!("      --config <PATH>      配置文件路径");
+    println!("      --config <PATH>      配置文件路径 (支持 .json/.toml)");
     println!("      --log-level <LEVEL>  日志级别 (默认: info)");
     println!("      --api-bind <ADDR>    HTTP API 监听地址");
-    println!("      --keepalive          保持连接活跃 (不挖矿)");
+    println!("  -k, --keepalive          保持连接活跃 (不挖矿)");
+    println!("      --doh                使用 DNS over HTTPS 解析矿池地址");
+    println!("  -B, --background         后台运行 (守护进程模式)");
     println!("  -h, --help               显示帮助信息");
     println!("  -v, --version            显示版本号");
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct TomlConfig {
-    #[serde(default)]
-    pub pool: Option<TomlPool>,
-
-    #[serde(default)]
-    pub cpu: Option<TomlCpu>,
-
-    #[serde(default)]
-    pub api: Option<TomlApi>,
-
-    #[serde(default)]
-    pub logging: Option<TomlLogging>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
-pub struct TomlPool {
+pub struct PoolConfig {
     pub url: String,
     pub user: String,
     #[serde(default = "default_pass")]
@@ -102,6 +93,8 @@ pub struct TomlPool {
     pub tls: bool,
     #[serde(default)]
     pub keepalive: bool,
+    #[serde(default)]
+    pub doh: bool,
 }
 
 fn default_pass() -> String {
@@ -109,23 +102,56 @@ fn default_pass() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TomlCpu {
+#[allow(dead_code)]
+pub struct CpuConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
     pub threads: Option<u32>,
+    #[serde(default)]
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TomlApi {
-    pub bind: SocketAddr,
+#[allow(dead_code)]
+pub struct ApiConfig {
+    pub bind: Option<SocketAddr>,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TomlLogging {
+pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
 }
 
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct FileConfig {
+    #[serde(default)]
+    pub pools: Option<Vec<PoolConfig>>,
+
+    #[serde(default)]
+    pub pool: Option<PoolConfig>,
+
+    #[serde(default)]
+    pub cpu: Option<CpuConfig>,
+
+    #[serde(default)]
+    pub api: Option<ApiConfig>,
+
+    #[serde(default)]
+    pub logging: Option<LoggingConfig>,
+
+    #[serde(default)]
+    pub background: Option<bool>,
+
+    #[serde(default)]
+    pub verbose: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +165,8 @@ pub struct Config {
     pub log_level: String,
     pub api_bind: Option<SocketAddr>,
     pub keepalive: bool,
+    pub doh: bool,
+    pub background: bool,
 }
 
 fn first_non_empty(a: Option<String>, b: Option<String>) -> Option<String> {
@@ -151,21 +179,53 @@ fn first_non_empty(a: Option<String>, b: Option<String>) -> Option<String> {
     }
 }
 
+fn load_file_config(path: &std::path::Path) -> anyhow::Result<Option<FileConfig>> {
+    let content = std::fs::read_to_string(path)?;
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    let cfg: FileConfig = if ext.eq_ignore_ascii_case("json") {
+        serde_json::from_str(&content)?
+    } else {
+        toml::from_str(&content)?
+    };
+
+    Ok(Some(cfg))
+}
+
+fn find_config_file(args_path: &Option<PathBuf>) -> anyhow::Result<Option<FileConfig>> {
+    if let Some(path) = args_path {
+        return load_file_config(path);
+    }
+
+    for name in &["config.toml", "config.json", "config.toml", "config.json"] {
+        let path = std::path::Path::new(name);
+        if path.exists() {
+            return load_file_config(path);
+        }
+    }
+
+    Ok(None)
+}
+
 impl Config {
     pub fn load(args: &Args) -> anyhow::Result<Self> {
-        let toml_cfg = if let Some(ref path) = args.config {
-            let content = std::fs::read_to_string(path)?;
-            Some(toml::from_str::<TomlConfig>(&content)?)
-        } else if let Ok(content) = std::fs::read_to_string("config.toml") {
-            Some(toml::from_str::<TomlConfig>(&content)?)
-        } else {
-            None
-        };
+        let file_cfg = find_config_file(&args.config)?;
 
-        let pool = toml_cfg.as_ref().and_then(|c| c.pool.as_ref());
-        let cpu = toml_cfg.as_ref().and_then(|c| c.cpu.as_ref());
-        let api = toml_cfg.as_ref().and_then(|c| c.api.as_ref());
-        let logging = toml_cfg.as_ref().and_then(|c| c.logging.as_ref());
+        let pool = file_cfg
+            .as_ref()
+            .and_then(|c| {
+                c.pool.as_ref().or_else(|| {
+                    c.pools.as_ref().and_then(|ps| ps.first())
+                })
+            });
+
+        let cpu = file_cfg.as_ref().and_then(|c| c.cpu.as_ref());
+        let api = file_cfg.as_ref().and_then(|c| c.api.as_ref());
+        let logging = file_cfg.as_ref().and_then(|c| c.logging.as_ref());
 
         let pool_url = first_non_empty(
             args.url.clone(),
@@ -196,6 +256,9 @@ impl Config {
             .or_else(|| cpu.and_then(|c| c.threads))
             .unwrap_or(0);
 
+        let background = args.background
+            || file_cfg.as_ref().and_then(|c| c.background).unwrap_or(false);
+
         Ok(Config {
             pool_url,
             pool_user,
@@ -203,8 +266,12 @@ impl Config {
             pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false),
             threads,
             log_level,
-            api_bind: args.api_bind.or(api.map(|a| a.bind)),
+            api_bind: args
+                .api_bind
+                .or_else(|| api.and_then(|a| a.bind)),
             keepalive: args.keepalive || pool.map(|p| p.keepalive).unwrap_or(false),
+            doh: args.doh || pool.map(|p| p.doh).unwrap_or(false),
+            background,
         })
     }
 }

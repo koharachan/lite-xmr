@@ -24,6 +24,8 @@ sysinfo = "0.30"
 num_cpus = "1"
 raw-cpuid = "11"
 hwlocality = { version = "1.0.0-alpha.12", features = ["vendored"] }
+ureq = "3"
+libc = "0.2"
 
 [[bin]]
 name = "lite-xmr"

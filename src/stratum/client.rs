@@ -46,6 +46,7 @@ impl StratumClient {
         mut job_tx: watch::Sender<Option<Job>>,
         mut submit_rx: mpsc::Receiver<(String, String, String)>,
         mut event_tx: mpsc::Sender<StratumEvent>,
+        keepalive: bool,
     ) -> Result<()> {
         self.running.store(true, Ordering::Release);
 
@@ -62,7 +63,7 @@ impl StratumClient {
             info!("正在连接矿池 {} ...", self.url);
 
             match self
-                .run_session(&mut job_tx, &mut submit_rx, &mut event_tx, &mut shutdown_rx)
+                .run_session(&mut job_tx, &mut submit_rx, &mut event_tx, &mut shutdown_rx, keepalive)
                 .await
             {
                 Ok(()) => {
@@ -87,6 +88,7 @@ impl StratumClient {
         submit_rx: &mut mpsc::Receiver<(String, String, String)>,
         event_tx: &mut mpsc::Sender<StratumEvent>,
         shutdown_rx: &mut watch::Receiver<bool>,
+        keepalive: bool,
     ) -> Result<()> {
         let transport = StratumTransport::connect(&self.url, self.use_tls)
             .await
@@ -128,40 +130,93 @@ impl StratumClient {
             return Err(Error::Stratum(format!("授权失败: {}", reason)));
         }
 
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed() => {
-                    info!("收到关闭信号，断开连接");
-                    break;
-                }
+        if keepalive {
+            info!("保活模式: 保持连接不挖矿");
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        info!("收到关闭信号，断开连接");
+                        break;
+                    }
 
-                line = lines.next_line() => {
-                    match line {
-                        Ok(Some(line)) => {
-                            let line = line.trim().to_string();
-                            if line.is_empty() {
-                                continue;
+                    line = lines.next_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                let line = line.trim().to_string();
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                let msg: serde_json::Value = match serde_json::from_str(&line) {
+                                    Ok(m) => m,
+                                    Err(_) => continue,
+                                };
+                                if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+                                    match method {
+                                        "mining.notify" => {
+                                            debug!("保活模式: 忽略 mining.notify");
+                                        }
+                                        "mining.set_target" => {
+                                            debug!("保活模式: 忽略 mining.set_target");
+                                        }
+                                        "mining.set_extranonce" => {
+                                            debug!("保活模式: 忽略 mining.set_extranonce");
+                                        }
+                                        _ => {
+                                            debug!("保活模式: 忽略方法 {}", method);
+                                        }
+                                    }
+                                }
+                                if msg.get("id").is_some() && msg.get("result").is_some() {
+                                    debug!("保活模式: 收到响应 id={:?}", msg.get("id"));
+                                }
                             }
-                            self.handle_message(&line, job_tx, event_tx).await?;
-                        }
-                        Ok(None) => {
-                            info!("矿池关闭了连接");
-                            break;
-                        }
-                        Err(e) => {
-                            return Err(Error::Network(e.to_string()));
+                            Ok(None) => {
+                                info!("矿池关闭了连接");
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(Error::Network(e.to_string()));
+                            }
                         }
                     }
                 }
+            }
+        } else {
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        info!("收到关闭信号，断开连接");
+                        break;
+                    }
 
-                Some((job_id, nonce, result)) = submit_rx.recv() => {
-                    let id = self.next_id();
-                    let submit_msg = format!(
-                        "{{\"id\":{},\"method\":\"mining.submit\",\"params\":[\"{}\",\"{}\",\"{}\",\"{}\"]}}\n",
-                        id, self.user, job_id, nonce, result
-                    );
-                    if let Err(e) = writer.write_all(submit_msg.as_bytes()).await {
-                        return Err(Error::Network(e.to_string()));
+                    line = lines.next_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                let line = line.trim().to_string();
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                self.handle_message(&line, job_tx, event_tx).await?;
+                            }
+                            Ok(None) => {
+                                info!("矿池关闭了连接");
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(Error::Network(e.to_string()));
+                            }
+                        }
+                    }
+
+                    Some((job_id, nonce, result)) = submit_rx.recv() => {
+                        let id = self.next_id();
+                        let submit_msg = format!(
+                            "{{\"id\":{},\"method\":\"mining.submit\",\"params\":[\"{}\",\"{}\",\"{}\",\"{}\"]}}\n",
+                            id, self.user, job_id, nonce, result
+                        );
+                        if let Err(e) = writer.write_all(submit_msg.as_bytes()).await {
+                            return Err(Error::Network(e.to_string()));
+                        }
                     }
                 }
             }

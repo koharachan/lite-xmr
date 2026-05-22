@@ -119,8 +119,12 @@ impl StratumClient {
                     return Err(Error::Stratum(format!("login 失败: {}", e)));
                 }
 
-                // login 成功后，result 中包含第一个 job
+                // login 成功后，提取 session_id + 第一个 job
+                let mut session_id = String::new();
                 if let Some(result) = msg.get("result").and_then(|v| v.as_object()) {
+                    if let Some(sid) = result.get("id").and_then(|v| v.as_str()) {
+                        session_id = sid.to_string();
+                    }
                     if let Some(job_obj) = result.get("job") {
                         if let Some(job) = Job::from_c3pool_job(job_obj) {
                             debug!("login job: id={} height={:?} algo={}", job.job_id, job.height, job.algo);
@@ -130,22 +134,22 @@ impl StratumClient {
                     }
                 }
 
-                info!("矿池登录成功");
+                info!("矿池登录成功 session={}", session_id);
                 let _ = event_tx.send(StratumEvent::Connected).await;
-                break;
+
+                // 继续读消息，进入主循环
+                if keepalive {
+                    keepalive_loop(&mut lines, shutdown_rx).await?;
+                } else {
+                    mining_loop(&mut lines, shutdown_rx, submit_rx, &mut writer, &self.user, self, job_tx, event_tx, &session_id).await?;
+                }
+                return Ok(());
             }
 
             // login 响应之前的中间消息
             handle_msg(&msg, job_tx, event_tx, keepalive).await?;
         }
 
-        // ── 主循环 ──
-        if keepalive {
-            info!("保活模式");
-            keepalive_loop(&mut lines, shutdown_rx).await
-        } else {
-            mining_loop(&mut lines, shutdown_rx, submit_rx, &mut writer, &self.user, self, job_tx, event_tx).await
-        }
     }
 
     pub fn stop(&self) {
@@ -168,9 +172,8 @@ async fn mining_loop(
     client: &StratumClient,
     job_tx: &mut watch::Sender<Option<Job>>,
     event_tx: &mut mpsc::Sender<StratumEvent>,
+    session_id: &str,
 ) -> Result<()> {
-    // 跟踪当前 session id（用于 submit）
-    let mut session_id = String::new();
 
     loop {
         tokio::select! {
@@ -186,14 +189,6 @@ async fn mining_loop(
                             Ok(m) => m,
                             Err(e) => { warn!("JSON error: {} (line: {})", e, &line[..line.len().min(120)]); continue; }
                         };
-                        // 从 job 通知中提取 session_id
-                        if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
-                            if method == "job" {
-                                if let Some(p) = msg.get("params").and_then(|p| p.get("id")).and_then(|v| v.as_str()) {
-                                    session_id = p.to_string();
-                                }
-                            }
-                        }
                         handle_msg(&msg, job_tx, event_tx, false).await?;
                     }
                     Ok(None) => { info!("矿池关闭了连接"); break; }
@@ -202,7 +197,7 @@ async fn mining_loop(
             }
             Some((job_id, nonce, result)) = submit_rx.recv() => {
                 let id = client.next_id();
-                let m = build_submit(user, &session_id, &job_id, &nonce, &result, id);
+                let m = build_submit(user, session_id, &job_id, &nonce, &result, id);
                 debug!("submit: id={} session={} job={} nonce={}", id, session_id, job_id, nonce);
                 if let Err(e) = writer.write_all(m.as_bytes()).await {
                     return Err(Error::Network(e.to_string()));

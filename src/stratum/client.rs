@@ -120,7 +120,7 @@ impl StratumClient {
                 }
 
                 // login 成功后，result 中包含第一个 job
-                if let Some(result) = msg.get("result").as_object() {
+                if let Some(result) = msg.get("result").and_then(|v| v.as_object()) {
                     if let Some(job_obj) = result.get("job") {
                         if let Some(job) = Job::from_c3pool_job(job_obj) {
                             debug!("login job: id={} height={:?} algo={}", job.job_id, job.height, job.algo);
@@ -292,7 +292,7 @@ fn build_login(user: &str, pass: &str, id: u64) -> String {
     s
 }
 
-fn build_submit(user: &str, session_id: &str, job_id: &str, nonce: &str, result: &str, id: u64) -> String {
+fn build_submit(_user: &str, session_id: &str, job_id: &str, nonce: &str, result: &str, id: u64) -> String {
     // c3pool submit 格式：参数是对象
     format!(
         "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{{\"id\":\"{}\",\"job_id\":\"{}\",\"nonce\":\"{}\",\"result\":\"{}\"}}}}\n",

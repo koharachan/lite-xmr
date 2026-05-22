@@ -9,9 +9,19 @@ use crate::job::Job;
 
 use super::transport::StratumTransport;
 
-pub const APP_USER_AGENT: &str = "lite-xmr/0.1.0";
+pub const APP_USER_AGENT: &str =
+    "XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022";
 
-const SUPPORTED_ALGOS: &[&str] = &["rx/0"];
+/// 支持的算法列表（c3pool 从 login.algo 数组中选取匹配项）
+const SUPPORTED_ALGOS: &[&str] = &[
+    "rx/0", "rx/wow", "rx/arq", "rx/graft", "rx/sfx", "rx/yada",
+    "cn/1", "cn/2", "cn/r", "cn/fast", "cn/half", "cn/xao",
+    "cn/rto", "cn/rwz", "cn/zls", "cn/double", "cn/ccx",
+    "cn-lite/1", "cn-heavy/0", "cn-heavy/tube", "cn-heavy/xhv",
+    "cn-pico", "cn-pico/tlo", "cn/upx2", "rx/2",
+    "argon2/chukwa", "argon2/chukwav2", "argon2/ninja",
+    "ghostrider",
+];
 
 #[derive(Debug, Clone)]
 pub enum StratumEvent {
@@ -34,10 +44,7 @@ pub struct StratumClient {
 impl StratumClient {
     pub fn new(url: String, user: String, pass: String, use_tls: bool) -> Self {
         StratumClient {
-            url,
-            user,
-            pass,
-            use_tls,
+            url, user, pass, use_tls,
             running: Arc::new(AtomicBool::new(false)),
             request_id: AtomicU64::new(1),
         }
@@ -93,104 +100,52 @@ impl StratumClient {
         let (reader, mut writer) = tokio::io::split(transport);
         let mut lines = BufReader::new(reader).lines();
 
-        // ── 握手：subscribe + authorize 背靠背发送（与 XMRig 行为一致）──
-        let subscribe_id = self.next_id();
-        let sub = format!(
-            "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"mining.subscribe\",\"params\":[\"{}\"]}}\n",
-            subscribe_id, APP_USER_AGENT
-        );
-        let auth_id = self.next_id();
-        let auth = build_authorize(&self.user, &self.pass, auth_id);
-
-        writer.write_all(sub.as_bytes()).await?;
-        writer.write_all(auth.as_bytes()).await?;
+        // ── Login（c3pool 协议：一次握手取代 subscribe + authorize）──
+        let login_id = self.next_id();
+        let login_msg = build_login(&self.user, &self.pass, login_id);
+        writer.write_all(login_msg.as_bytes()).await?;
         writer.flush().await?;
+        debug!("login(id={})", login_id);
 
-        debug!("handshake: sub(id={}) + auth(id={}) sent", subscribe_id, auth_id);
-
-        // 等待 subscribe + authorize 两个响应都返回
-        let mut sub_done = false;
-        let mut auth_done = false;
-
-        while !sub_done || !auth_done {
-            let line = lines
-                .next_line()
-                .await?
-                .ok_or(Error::Stratum("矿池在握手中关闭了连接".into()))?;
+        // 等待 login 响应（可能包含第一个 job）
+        loop {
+            let line = lines.next_line().await?
+                .ok_or(Error::Stratum("矿池在登录阶段关闭了连接".into()))?;
             let msg: serde_json::Value = serde_json::from_str(&line)?;
             let mid = msg.get("id").and_then(|v| v.as_u64());
 
-            if mid == Some(subscribe_id) {
+            if mid == Some(login_id) {
                 if let Some(e) = get_json_error(&msg) {
-                    return Err(Error::Stratum(format!("subscribe 失败: {}", e)));
+                    return Err(Error::Stratum(format!("login 失败: {}", e)));
                 }
-                sub_done = true;
-                debug!("handshake: subscribe ok");
-                continue;
-            }
 
-            if mid == Some(auth_id) {
-                if let Some(e) = get_json_error(&msg) {
-                    return Err(Error::Stratum(format!("授权失败: {}", e)));
-                }
-                auth_done = true;
-                info!("矿池授权成功");
-                let _ = event_tx.send(StratumEvent::Connected).await;
-                continue;
-            }
-
-            // 握手期间矿池推送的消息（mining.notify / set_extranonce 等）
-            self.handle_incoming(&msg, job_tx, event_tx, keepalive).await?;
-        }
-
-        // ── 主循环 ──
-        if keepalive {
-            info!("保活模式: 保持连接不挖矿");
-            keepalive_loop(&mut lines, shutdown_rx).await
-        } else {
-            mining_loop(&mut lines, shutdown_rx, submit_rx, &mut writer, &self.user, self, job_tx, event_tx).await
-        }
-    }
-
-    async fn handle_incoming(
-        &self,
-        msg: &serde_json::Value,
-        job_tx: &mut watch::Sender<Option<Job>>,
-        event_tx: &mut mpsc::Sender<StratumEvent>,
-        keepalive: bool,
-    ) -> Result<()> {
-        if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
-            match method {
-                "mining.notify" => {
-                    if keepalive { return Ok(()); }
-                    if let Some(params) = msg.get("params").and_then(|p| p.as_array()) {
-                        if let Some(job) = Job::from_notify(params) {
-                            debug!("job: id={} height={:?} algo={}", job.job_id, job.height, job.algo);
+                // login 成功后，result 中包含第一个 job
+                if let Some(result) = msg.get("result").as_object() {
+                    if let Some(job_obj) = result.get("job") {
+                        if let Some(job) = Job::from_c3pool_job(job_obj) {
+                            debug!("login job: id={} height={:?} algo={}", job.job_id, job.height, job.algo);
                             let _ = job_tx.send(Some(job.clone())).ok();
                             let _ = event_tx.send(StratumEvent::NewJob(job)).await;
                         }
                     }
                 }
-                "mining.set_target" | "mining.set_extranonce" | "mining.set_difficulty" => {
-                    debug!("{}", method);
-                }
-                _ => debug!("unknown method: {}", method),
+
+                info!("矿池登录成功");
+                let _ = event_tx.send(StratumEvent::Connected).await;
+                break;
             }
-            return Ok(());
+
+            // login 响应之前的中间消息
+            handle_msg(&msg, job_tx, event_tx, keepalive).await?;
         }
 
-        if msg.get("id").is_some() {
-            match msg.get("error") {
-                None | Some(serde_json::Value::Null) => {
-                    let _ = event_tx.send(StratumEvent::Accepted).await;
-                }
-                Some(err) => {
-                    let _ = event_tx.send(StratumEvent::Rejected(format_json_error(err))).await;
-                }
-            }
+        // ── 主循环 ──
+        if keepalive {
+            info!("保活模式");
+            keepalive_loop(&mut lines, shutdown_rx).await
+        } else {
+            mining_loop(&mut lines, shutdown_rx, submit_rx, &mut writer, &self.user, self, job_tx, event_tx).await
         }
-
-        Ok(())
     }
 
     pub fn stop(&self) {
@@ -214,11 +169,13 @@ async fn mining_loop(
     job_tx: &mut watch::Sender<Option<Job>>,
     event_tx: &mut mpsc::Sender<StratumEvent>,
 ) -> Result<()> {
+    // 跟踪当前 session id（用于 submit）
+    let mut session_id = String::new();
+
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => {
-                info!("收到关闭信号，断开连接");
-                break;
+                info!("收到关闭信号"); break;
             }
             line = lines.next_line() => {
                 match line {
@@ -227,9 +184,17 @@ async fn mining_loop(
                         if line.is_empty() { continue; }
                         let msg: serde_json::Value = match serde_json::from_str(&line) {
                             Ok(m) => m,
-                            Err(e) => { warn!("JSON parse error: {} (line: {})", e, &line[..line.len().min(120)]); continue; }
+                            Err(e) => { warn!("JSON error: {} (line: {})", e, &line[..line.len().min(120)]); continue; }
                         };
-                        client.handle_incoming(&msg, job_tx, event_tx, false).await?;
+                        // 从 job 通知中提取 session_id
+                        if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+                            if method == "job" {
+                                if let Some(p) = msg.get("params").and_then(|p| p.get("id")).and_then(|v| v.as_str()) {
+                                    session_id = p.to_string();
+                                }
+                            }
+                        }
+                        handle_msg(&msg, job_tx, event_tx, false).await?;
                     }
                     Ok(None) => { info!("矿池关闭了连接"); break; }
                     Err(e) => return Err(Error::Network(e.to_string())),
@@ -237,10 +202,8 @@ async fn mining_loop(
             }
             Some((job_id, nonce, result)) = submit_rx.recv() => {
                 let id = client.next_id();
-                let m = format!(
-                    "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"mining.submit\",\"params\":[\"{}\",\"{}\",\"{}\",\"{}\"]}}\n",
-                    id, user, job_id, nonce, result
-                );
+                let m = build_submit(user, &session_id, &job_id, &nonce, &result, id);
+                debug!("submit: id={} session={} job={} nonce={}", id, session_id, job_id, nonce);
                 if let Err(e) = writer.write_all(m.as_bytes()).await {
                     return Err(Error::Network(e.to_string()));
                 }
@@ -256,17 +219,15 @@ async fn keepalive_loop(
 ) -> Result<()> {
     loop {
         tokio::select! {
-            _ = shutdown_rx.changed() => { info!("收到关闭信号"); break; }
+            _ = shutdown_rx.changed() => { break; }
             line = lines.next_line() => {
                 match line {
                     Ok(Some(l)) => {
-                        let l = l.trim().to_string();
-                        if l.is_empty() { continue; }
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&l) {
-                            debug!("keepalive: id={:?} method={:?}", msg.get("id"), msg.get("method"));
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(l.trim()) {
+                            debug!("keepalive: method={:?}", msg.get("method"));
                         }
                     }
-                    Ok(None) => { info!("矿池关闭了连接"); break; }
+                    Ok(None) => { info!("矿池关闭"); break; }
                     Err(e) => return Err(Error::Network(e.to_string())),
                 }
             }
@@ -275,17 +236,68 @@ async fn keepalive_loop(
     Ok(())
 }
 
+async fn handle_msg(
+    msg: &serde_json::Value,
+    job_tx: &mut watch::Sender<Option<Job>>,
+    event_tx: &mut mpsc::Sender<StratumEvent>,
+    _keepalive: bool,
+) -> Result<()> {
+    // "job" 通知（c3pool 的 mining.notify）
+    if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+        match method {
+            "job" => {
+                if let Some(params) = msg.get("params") {
+                    if let Some(job) = Job::from_c3pool_job(params) {
+                        debug!("job: id={} height={:?} algo={}", job.job_id, job.height, job.algo);
+                        let _ = job_tx.send(Some(job.clone())).ok();
+                        let _ = event_tx.send(StratumEvent::NewJob(job)).await;
+                    }
+                }
+            }
+            _ => debug!("method: {}", method),
+        }
+        return Ok(());
+    }
+
+    // 响应消息
+    if msg.get("id").is_some() {
+        match msg.get("error") {
+            None | Some(serde_json::Value::Null) => {
+                let _ = event_tx.send(StratumEvent::Accepted).await;
+            }
+            Some(err) => {
+                let _ = event_tx.send(StratumEvent::Rejected(format_json_error(err))).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ══════════════════════════════════════════
 
-fn build_authorize(user: &str, pass: &str, id: u64) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(256);
-    write!(s, "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"mining.authorize\",\"params\":[\"{}\",\"{}\"", id, user, pass).unwrap();
-    for algo in SUPPORTED_ALGOS {
-        write!(s, ",\"{}\"", algo).unwrap();
+fn build_login(user: &str, pass: &str, id: u64) -> String {
+    // c3pool login 格式：参数是对象，包含 login / pass / agent / algo 数组
+    let mut s = format!(
+        "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{{\"login\":\"{}\",\"pass\":\"{}\",\"agent\":\"{}\",\"algo\":[",
+        id, user, pass, APP_USER_AGENT
+    );
+    for (i, algo) in SUPPORTED_ALGOS.iter().enumerate() {
+        if i > 0 { s.push(','); }
+        s.push('"');
+        s.push_str(algo);
+        s.push('"');
     }
-    s.push_str("]}\n");
+    s.push_str("]}}\n");
     s
+}
+
+fn build_submit(user: &str, session_id: &str, job_id: &str, nonce: &str, result: &str, id: u64) -> String {
+    // c3pool submit 格式：参数是对象
+    format!(
+        "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{{\"id\":\"{}\",\"job_id\":\"{}\",\"nonce\":\"{}\",\"result\":\"{}\"}}}}\n",
+        id, session_id, job_id, nonce, result
+    )
 }
 
 fn get_json_error(msg: &serde_json::Value) -> Option<String> {

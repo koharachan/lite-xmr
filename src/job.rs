@@ -112,6 +112,28 @@ impl Job {
         })
     }
 
+    /// c3pool 格式：job 以 JSON 对象传递（login 响应或 "job" 通知）
+    pub fn from_c3pool_job(obj: &serde_json::Value) -> Option<Self> {
+        let job_id = obj.get("job_id")?.as_str()?.to_string();
+        let blob = obj.get("blob")?.as_str()?.to_string();
+        let target = obj.get("target").and_then(|v| v.as_str()).unwrap_or("c5a70000").to_string();
+        let algo = obj.get("algo").and_then(|v| v.as_str()).unwrap_or("rx/0").to_string();
+        let height = obj.get("height").and_then(|v| v.as_u64());
+        let seed_hash = obj.get("seed_hash").and_then(|v| v.as_str()).map(String::from);
+
+        let blob_bytes = match hex::decode(&blob) {
+            Ok(b) => b,
+            Err(e) => { tracing::warn!("c3pool job: invalid blob hex: {}", e); return None; }
+        };
+
+        let difficulty = match decode_target(&target) {
+            Ok(d) => d,
+            Err(e) => { tracing::warn!("c3pool job: {}", e); return None; }
+        };
+
+        Some(Job { job_id, blob, target, algo, height, seed_hash, blob_bytes, difficulty })
+    }
+
     pub fn blob_bytes(&self) -> &[u8] {
         &self.blob_bytes
     }

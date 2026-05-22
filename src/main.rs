@@ -44,6 +44,8 @@ fn daemonize() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 安装 rustls 的 ring 加密提供程序，必须在任何 TLS 连接前调用
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let args = match Args::parse()? {
         Ok(a) => a,
         Err(EarlyExit::Help) | Err(EarlyExit::Version) => return Ok(()),

@@ -138,6 +138,7 @@ impl Controller {
                                 job.job_id, job.difficulty(), job.algo, height);
                         }
                         StratumEvent::Accepted => {
+                            stats.record_accepted();
                             info!("accepted");
                         }
                         StratumEvent::Rejected(reason) => {

@@ -27,7 +27,7 @@ impl Taskbar {
             unsafe {
                 use std::ffi::c_void;
                 type Hwnd = *mut c_void;
-                extern "system" {
+                unsafe extern "system" {
                     fn GetConsoleWindow() -> Hwnd;
                 }
                 let hwnd = GetConsoleWindow();

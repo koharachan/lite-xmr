@@ -186,7 +186,7 @@ fn mine_loop_sync(
         stats.record_hashes(1);
 
         if check_hash_difficulty(&hash, target_diff) {
-            info!(
+            debug!(
                 "Worker #{} 找到份额! nonce={:08x} job={}",
                 worker_id, nonce, job.job_id
             );
@@ -201,7 +201,6 @@ fn mine_loop_sync(
                 debug!("Worker #{} 提交 channel 已满", worker_id);
             }
 
-            stats.record_accepted();
         }
 
         nonce += 1;

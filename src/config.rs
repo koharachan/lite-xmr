@@ -44,7 +44,7 @@ impl Args {
             user: pargs.opt_value_from_str(["-u", "--user"])?,
             pass: pargs.opt_value_from_str(["-p", "--pass"])?,
             threads: pargs.opt_value_from_str(["-t", "--threads"])?,
-            tls: pargs.contains("--tls"),
+            tls: pargs.contains(["-tls", "--tls"]),
             config: pargs.opt_value_from_str("--config")?,
             log_level: pargs.opt_value_from_str("--log-level")?,
             api_bind: pargs.opt_value_from_str("--api-bind")?,

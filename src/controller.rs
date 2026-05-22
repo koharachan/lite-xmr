@@ -159,7 +159,7 @@ impl Controller {
                     let nonce = share.nonce.clone();
                     let result = share.result.clone();
                     let _ = submit_tx_clone.try_send((job_id.clone(), nonce.clone(), result));
-                    info!("share: job={} nonce={}", job_id, nonce);
+                    debug!("share: job={} nonce={}", job_id, nonce);
                 }
             }
         }

@@ -11,6 +11,10 @@ use super::transport::StratumTransport;
 
 pub const APP_USER_AGENT: &str = "lite-xmr/0.1.0";
 
+/// 客户端支持的算法列表（按优先级排序）。
+/// c3pool 等 EthereumStratum 矿池会从此列表中选取第一个服务端支持的算法。
+const SUPPORTED_ALGOS: &[&str] = &["rx/0"];
+
 #[derive(Debug, Clone)]
 pub enum StratumEvent {
     NewJob(Job),
@@ -97,16 +101,19 @@ impl StratumClient {
         let (reader, mut writer) = tokio::io::split(transport);
         let mut lines = BufReader::new(reader).lines();
 
-        // --- 阶段 1: 发送 subscribe，读取响应（可能夹杂 mining.notify） ---
+        // --- 阶段 1: mining.subscribe ---
+        // EthereumStratum / 标准 Monero 均接受 ["agent"] 格式
         let subscribe_id = self.next_id();
         let subscribe_msg = format!(
-            "{{\"id\":{},\"method\":\"mining.subscribe\",\"params\":[\"{}\",\"rx/0\"]}}\n",
+            "{{\"id\":{},\"method\":\"mining.subscribe\",\"params\":[\"{}\"]}}\n",
             subscribe_id, APP_USER_AGENT
         );
         writer.write_all(subscribe_msg.as_bytes()).await?;
-        debug!("已发送订阅请求 id={}", subscribe_id);
+        debug!("subscribe(id={})", subscribe_id);
 
-        // 循环读取，直到收到 subscribe 响应
+        let mut _extranonce1 = String::new();
+        let mut _extranonce2_size: u32 = 4;
+
         loop {
             let line = lines
                 .next_line()
@@ -115,33 +122,37 @@ impl StratumClient {
 
             let msg: serde_json::Value = serde_json::from_str(&line)?;
 
-            // 检查是否是我们的 subscribe 响应
-            if msg.get("id").and_then(|v| v.as_u64()) == Some(subscribe_id) {
-                debug!("订阅响应: {}", line.trim());
-                if let Some(err) = msg.get("error").and_then(|e| e.as_object()) {
-                    if !err.is_empty() {
-                        let reason = err
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("未知原因");
-                        return Err(Error::Stratum(format!("订阅失败: {}", reason)));
+            if is_response_id(&msg, subscribe_id) {
+                debug!("subscribe response: {}", line.trim());
+                if let Some(err) = get_json_error(&msg) {
+                    return Err(Error::Stratum(format!("订阅失败: {}", err)));
+                }
+                // 解析 extranonce 信息（用于 EthereumStratum 协议）
+                if let Some(result) = msg.get("result").and_then(|r| r.as_array()) {
+                    if result.len() >= 3 {
+                        // result[1] = extranonce1, result[2] = extranonce2_size
+                        if let Some(en1) = result.get(1).and_then(|v| v.as_str()) {
+                            _extranonce1 = en1.to_string();
+                        }
+                        if let Some(sz) = result.get(2).and_then(|v| v.as_u64()) {
+                            _extranonce2_size = sz as u32;
+                        }
                     }
                 }
+                debug!("extranonce1={}, extranonce2_size={}", _extranonce1, _extranonce2_size);
                 break;
             }
 
-            // 可能是矿池在订阅响应前就推送了 mining.notify 或其它消息
+            // 中间夹杂的推送消息
             self.handle_incoming(&msg, job_tx, event_tx, keepalive).await?;
         }
 
-        // --- 阶段 2: 发送 authorize，读取响应（可能夹杂 mining.notify） ---
+        // --- 阶段 2: mining.authorize ---
+        // 传入算法列表，使 c3pool / EthereumStratum 矿池能够匹配
         let auth_id = self.next_id();
-        let auth_msg = format!(
-            "{{\"id\":{},\"method\":\"mining.authorize\",\"params\":[\"{}\",\"{}\"]}}\n",
-            auth_id, self.user, self.pass
-        );
+        let auth_msg = build_authorize(&self.user, &self.pass, auth_id);
         writer.write_all(auth_msg.as_bytes()).await?;
-        debug!("已发送授权请求 id={}", auth_id);
+        debug!("authorize(id={})", auth_id);
 
         loop {
             let line = lines
@@ -151,24 +162,32 @@ impl StratumClient {
 
             let msg: serde_json::Value = serde_json::from_str(&line)?;
 
-            // 检查是否是我们的 auth 响应
-            if msg.get("id").and_then(|v| v.as_u64()) == Some(auth_id) {
-                debug!("授权响应: {}", line.trim());
+            if is_response_id(&msg, auth_id) {
+                debug!("authorize response: {}", line.trim());
+
+                // 检查错误
+                if let Some(err) = get_json_error(&msg) {
+                    return Err(Error::Stratum(format!("授权失败: {}", err)));
+                }
+
+                // 成功：result 为 true (bool)
                 if msg.get("result").and_then(|r| r.as_bool()).unwrap_or(false) {
                     info!("矿池授权成功");
                     let _ = event_tx.send(StratumEvent::Connected).await;
                     break;
-                } else {
-                    let reason = msg
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("未知原因");
-                    return Err(Error::Stratum(format!("授权失败: {}", reason)));
                 }
+
+                // result 存在但不是 true（某些池返回字符串）
+                if msg.get("result").is_some() && msg.get("error").is_none() {
+                    info!("矿池授权成功");
+                    let _ = event_tx.send(StratumEvent::Connected).await;
+                    break;
+                }
+
+                return Err(Error::Stratum("授权响应格式无法识别".into()));
             }
 
-            // 可能是矿池在授权响应前推送的消息（mining.notify / set_extranonce 等）
+            // 中间夹杂的推送消息
             self.handle_incoming(&msg, job_tx, event_tx, keepalive).await?;
         }
 
@@ -181,45 +200,22 @@ impl StratumClient {
                         info!("收到关闭信号，断开连接");
                         break;
                     }
-
                     line = lines.next_line() => {
                         match line {
                             Ok(Some(line)) => {
                                 let line = line.trim().to_string();
-                                if line.is_empty() {
-                                    continue;
-                                }
+                                if line.is_empty() { continue; }
                                 let msg: serde_json::Value = match serde_json::from_str(&line) {
-                                    Ok(m) => m,
-                                    Err(_) => continue,
+                                    Ok(m) => m, Err(_) => continue,
                                 };
-                                if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
-                                    match method {
-                                        "mining.notify" => {
-                                            debug!("保活模式: 忽略 mining.notify");
-                                        }
-                                        "mining.set_target" => {
-                                            debug!("保活模式: 忽略 mining.set_target");
-                                        }
-                                        "mining.set_extranonce" => {
-                                            debug!("保活模式: 忽略 mining.set_extranonce");
-                                        }
-                                        _ => {
-                                            debug!("保活模式: 忽略方法 {}", method);
-                                        }
-                                    }
-                                }
-                                if msg.get("id").is_some() && msg.get("result").is_some() {
+                                if msg.get("method").is_some() {
+                                    debug!("保活模式: 忽略 method={:?}", msg.get("method"));
+                                } else if msg.get("id").is_some() {
                                     debug!("保活模式: 收到响应 id={:?}", msg.get("id"));
                                 }
                             }
-                            Ok(None) => {
-                                info!("矿池关闭了连接");
-                                break;
-                            }
-                            Err(e) => {
-                                return Err(Error::Network(e.to_string()));
-                            }
+                            Ok(None) => { info!("矿池关闭了连接"); break; }
+                            Err(e) => return Err(Error::Network(e.to_string())),
                         }
                     }
                 }
@@ -231,14 +227,11 @@ impl StratumClient {
                         info!("收到关闭信号，断开连接");
                         break;
                     }
-
                     line = lines.next_line() => {
                         match line {
                             Ok(Some(line)) => {
                                 let line = line.trim().to_string();
-                                if line.is_empty() {
-                                    continue;
-                                }
+                                if line.is_empty() { continue; }
                                 let msg: serde_json::Value = match serde_json::from_str(&line) {
                                     Ok(m) => m,
                                     Err(e) => {
@@ -248,16 +241,10 @@ impl StratumClient {
                                 };
                                 self.handle_incoming(&msg, job_tx, event_tx, false).await?;
                             }
-                            Ok(None) => {
-                                info!("矿池关闭了连接");
-                                break;
-                            }
-                            Err(e) => {
-                                return Err(Error::Network(e.to_string()));
-                            }
+                            Ok(None) => { info!("矿池关闭了连接"); break; }
+                            Err(e) => return Err(Error::Network(e.to_string())),
                         }
                     }
-
                     Some((job_id, nonce, result)) = submit_rx.recv() => {
                         let id = self.next_id();
                         let submit_msg = format!(
@@ -275,7 +262,7 @@ impl StratumClient {
         Ok(())
     }
 
-    /// 统一的消息分发：处理 mining.notify / set_extranonce / set_target / submit 响应
+    /// 统一的消息分发
     async fn handle_incoming(
         &self,
         msg: &serde_json::Value,
@@ -283,7 +270,7 @@ impl StratumClient {
         event_tx: &mut mpsc::Sender<StratumEvent>,
         keepalive: bool,
     ) -> Result<()> {
-        // 1) 带 method 字段的推送消息
+        // 1) 带 method 的推送消息
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
             match method {
                 "mining.notify" => {
@@ -300,12 +287,13 @@ impl StratumClient {
                     }
                 }
                 "mining.set_target" => {
-                    debug!("收到 mining.set_target (目标难度更新)");
-                    // 大多数矿池通过 mining.notify 的 target 字段控制难度，这里暂不处理
+                    debug!("mining.set_target (目标难度更新)");
                 }
                 "mining.set_extranonce" => {
-                    debug!("收到 mining.set_extranonce (已记录，使用默认 nonce 偏移)");
-                    // Monero 标准: extranonce 内嵌在 blob 中，nonce 偏移固定为 39
+                    debug!("mining.set_extranonce (已记录)");
+                }
+                "mining.set_difficulty" => {
+                    debug!("mining.set_difficulty");
                 }
                 _ => {
                     debug!("未知方法: {}", method);
@@ -314,7 +302,7 @@ impl StratumClient {
             return Ok(());
         }
 
-        // 2) submit 响应（带 id + result/error）
+        // 2) 响应消息（带 id + result/error）
         if msg.get("id").is_some() {
             match msg.get("error") {
                 None | Some(serde_json::Value::Null) => {
@@ -341,4 +329,43 @@ impl StratumClient {
     fn next_id(&self) -> u64 {
         self.request_id.fetch_add(1, Ordering::Relaxed)
     }
+}
+
+// ---- 辅助函数 ----
+
+/// 构建 authorize JSON，包含算法列表以兼容 EthereumStratum (c3pool)
+fn build_authorize(user: &str, pass: &str, id: u64) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(256);
+    write!(
+        s,
+        "{{\"id\":{},\"method\":\"mining.authorize\",\"params\":[\"{}\",\"{}\"",
+        id, user, pass
+    )
+    .unwrap();
+    for algo in SUPPORTED_ALGOS {
+        write!(s, ",\"{}\"", algo).unwrap();
+    }
+    s.push_str("]}\n");
+    s
+}
+
+/// 检查 JSON 消息的 id 是否匹配
+fn is_response_id(msg: &serde_json::Value, expected: u64) -> bool {
+    msg.get("id").and_then(|v| v.as_u64()) == Some(expected)
+}
+
+/// 从 JSON-RPC 消息中提取 error.message
+fn get_json_error(msg: &serde_json::Value) -> Option<String> {
+    let err = msg.get("error")?;
+    if err.is_null() {
+        return None;
+    }
+    // error 可能是字符串或对象 {code, message}
+    if let Some(s) = err.as_str() {
+        return Some(s.to_string());
+    }
+    err.get("message")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string())
 }

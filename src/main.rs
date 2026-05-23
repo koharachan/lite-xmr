@@ -11,9 +11,18 @@ mod taskbar;
 
 use std::process;
 use tracing::info;
+use tracing_subscriber::fmt::{format::Writer, time::FormatTime};
 
 use config::{Args, Config, EarlyExit};
 use controller::Controller;
+
+struct LocalLogTime;
+
+impl FormatTime for LocalLogTime {
+    fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%y/%m/%d %H:%M:%S"))
+    }
+}
 
 fn daemonize() {
     #[cfg(target_family = "unix")]
@@ -44,8 +53,9 @@ fn daemonize() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 安装 rustls 的 ring 加密提供程序，必须在任何 TLS 连接前调用
+    // Install rustls' ring crypto provider before any TLS connection is made.
     let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args = match Args::parse()? {
         Ok(a) => a,
         Err(EarlyExit::Help) | Err(EarlyExit::Version) => return Ok(()),
@@ -57,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing_subscriber::fmt()
+        .compact()
+        .with_timer(LocalLogTime)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| config.log_level.clone().parse().unwrap()),
@@ -68,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut controller = Controller::new();
     if let Err(e) = controller.run(&config).await {
-        info!("挖矿终止: {}", e);
+        info!("miner stopped: {}", e);
         process::exit(1);
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "lite-xmr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["lite-xmr contributors"]
 
@@ -26,6 +26,7 @@ raw-cpuid = "11"
 hwlocality = { version = "1.0.0-alpha.12", features = ["vendored"] }
 ureq = "3"
 libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [[bin]]
 name = "lite-xmr"

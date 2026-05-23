@@ -182,10 +182,7 @@ fn first_non_empty(a: Option<String>, b: Option<String>) -> Option<String> {
 fn load_file_config(path: &std::path::Path) -> anyhow::Result<Option<FileConfig>> {
     let content = std::fs::read_to_string(path)?;
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let cfg: FileConfig = if ext.eq_ignore_ascii_case("json") {
         serde_json::from_str(&content)?
@@ -215,29 +212,21 @@ impl Config {
     pub fn load(args: &Args) -> anyhow::Result<Self> {
         let file_cfg = find_config_file(&args.config)?;
 
-        let pool = file_cfg
-            .as_ref()
-            .and_then(|c| {
-                c.pool.as_ref().or_else(|| {
-                    c.pools.as_ref().and_then(|ps| ps.first())
-                })
-            });
+        let pool = file_cfg.as_ref().and_then(|c| {
+            c.pool
+                .as_ref()
+                .or_else(|| c.pools.as_ref().and_then(|ps| ps.first()))
+        });
 
         let cpu = file_cfg.as_ref().and_then(|c| c.cpu.as_ref());
         let api = file_cfg.as_ref().and_then(|c| c.api.as_ref());
         let logging = file_cfg.as_ref().and_then(|c| c.logging.as_ref());
 
-        let pool_url = first_non_empty(
-            args.url.clone(),
-            pool.map(|p| p.url.clone()),
-        )
-        .ok_or_else(|| anyhow::anyhow!("未指定矿池地址，请使用 -o/--url 或配置文件"))?;
+        let pool_url = first_non_empty(args.url.clone(), pool.map(|p| p.url.clone()))
+            .ok_or_else(|| anyhow::anyhow!("未指定矿池地址，请使用 -o/--url 或配置文件"))?;
 
-        let pool_user = first_non_empty(
-            args.user.clone(),
-            pool.map(|p| p.user.clone()),
-        )
-        .ok_or_else(|| anyhow::anyhow!("未指定钱包地址，请使用 -u/--user 或配置文件"))?;
+        let pool_user = first_non_empty(args.user.clone(), pool.map(|p| p.user.clone()))
+            .ok_or_else(|| anyhow::anyhow!("未指定钱包地址，请使用 -u/--user 或配置文件"))?;
 
         let pool_pass = args
             .pass
@@ -257,7 +246,10 @@ impl Config {
             .unwrap_or(0);
 
         let background = args.background
-            || file_cfg.as_ref().and_then(|c| c.background).unwrap_or(false);
+            || file_cfg
+                .as_ref()
+                .and_then(|c| c.background)
+                .unwrap_or(false);
 
         Ok(Config {
             pool_url,
@@ -266,9 +258,7 @@ impl Config {
             pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false),
             threads,
             log_level,
-            api_bind: args
-                .api_bind
-                .or_else(|| api.and_then(|a| a.bind)),
+            api_bind: args.api_bind.or_else(|| api.and_then(|a| a.bind)),
             keepalive: args.keepalive || pool.map(|p| p.keepalive).unwrap_or(false),
             doh: args.doh || pool.map(|p| p.doh).unwrap_or(false),
             background,

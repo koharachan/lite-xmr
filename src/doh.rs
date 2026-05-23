@@ -88,7 +88,8 @@ fn parse_dns_response(data: &[u8]) -> Vec<SocketAddr> {
         }
         match atype {
             1 if rdlength == 4 => {
-                let ip = std::net::Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
+                let ip =
+                    std::net::Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
                 results.push(SocketAddr::new(ip.into(), 0));
             }
             28 if rdlength == 16 => {
@@ -172,7 +173,10 @@ fn bench_doh_server(server: &str) -> Option<Duration> {
 }
 
 pub fn resolve(hostname: &str, port: u16) -> Option<SocketAddr> {
-    info!("DOH: 正在通过 {} 个 DNS 解析器测试延迟...", DNS_RESOLVERS.len());
+    info!(
+        "DOH: 正在通过 {} 个 DNS 解析器测试延迟...",
+        DNS_RESOLVERS.len()
+    );
     let ping_timeout = Duration::from_secs(2);
 
     let mut resolver_times: Vec<(&str, Duration)> = DNS_RESOLVERS
@@ -187,7 +191,13 @@ pub fn resolve(hostname: &str, port: u16) -> Option<SocketAddr> {
 
     resolver_times.sort_by_key(|(_, d)| *d);
     resolver_times.truncate(3);
-    info!("DOH: 最快的3个 DNS 解析器: {:?}", resolver_times.iter().map(|(a, d)| format!("{}({}ms)", a, d.as_millis())).collect::<Vec<_>>());
+    info!(
+        "DOH: 最快的3个 DNS 解析器: {:?}",
+        resolver_times
+            .iter()
+            .map(|(a, d)| format!("{}({}ms)", a, d.as_millis()))
+            .collect::<Vec<_>>()
+    );
 
     info!("DOH: 正在测试 {} 个 DOH 服务器...", DOH_SERVERS.len());
     let mut doh_times: Vec<(&str, Duration)> = DOH_SERVERS
@@ -207,7 +217,13 @@ pub fn resolve(hostname: &str, port: u16) -> Option<SocketAddr> {
 
     doh_times.sort_by_key(|(_, d)| *d);
     doh_times.truncate(2);
-    info!("DOH: 最快的2个 DOH 服务器: {:?}", doh_times.iter().map(|(a, d)| format!("{}({}ms)", a, d.as_millis())).collect::<Vec<_>>());
+    info!(
+        "DOH: 最快的2个 DOH 服务器: {:?}",
+        doh_times
+            .iter()
+            .map(|(a, d)| format!("{}({}ms)", a, d.as_millis()))
+            .collect::<Vec<_>>()
+    );
 
     info!("DOH: 正在通过 DOH 解析 {} 的 A/AAAA 记录...", hostname);
     let mut addrs: Vec<SocketAddr> = Vec::new();
@@ -229,7 +245,10 @@ pub fn resolve(hostname: &str, port: u16) -> Option<SocketAddr> {
         return None;
     }
 
-    info!("DOH: 解析到 {} 个地址，正在测试 TCP 连接延迟...", addrs.len());
+    info!(
+        "DOH: 解析到 {} 个地址，正在测试 TCP 连接延迟...",
+        addrs.len()
+    );
     let mut addr_times: Vec<(SocketAddr, Duration)> = Vec::new();
     for &addr in &addrs {
         let start = Instant::now();

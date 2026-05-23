@@ -42,6 +42,7 @@ impl Job {
     const IDX_HEIGHT: usize = 4;
     const IDX_SEED_HASH: usize = 5;
 
+    #[allow(dead_code)]
     pub fn from_notify(params: &[serde_json::Value]) -> Option<Self> {
         if params.len() < 4 {
             tracing::warn!("mining.notify: params too short ({})", params.len());
@@ -116,22 +117,48 @@ impl Job {
     pub fn from_c3pool_job(obj: &serde_json::Value) -> Option<Self> {
         let job_id = obj.get("job_id")?.as_str()?.to_string();
         let blob = obj.get("blob")?.as_str()?.to_string();
-        let target = obj.get("target").and_then(|v| v.as_str()).unwrap_or("c5a70000").to_string();
-        let algo = obj.get("algo").and_then(|v| v.as_str()).unwrap_or("rx/0").to_string();
+        let target = obj
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("c5a70000")
+            .to_string();
+        let algo = obj
+            .get("algo")
+            .and_then(|v| v.as_str())
+            .unwrap_or("rx/0")
+            .to_string();
         let height = obj.get("height").and_then(|v| v.as_u64());
-        let seed_hash = obj.get("seed_hash").and_then(|v| v.as_str()).map(String::from);
+        let seed_hash = obj
+            .get("seed_hash")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let blob_bytes = match hex::decode(&blob) {
             Ok(b) => b,
-            Err(e) => { tracing::warn!("c3pool job: invalid blob hex: {}", e); return None; }
+            Err(e) => {
+                tracing::warn!("c3pool job: invalid blob hex: {}", e);
+                return None;
+            }
         };
 
         let difficulty = match decode_target(&target) {
             Ok(d) => d,
-            Err(e) => { tracing::warn!("c3pool job: {}", e); return None; }
+            Err(e) => {
+                tracing::warn!("c3pool job: {}", e);
+                return None;
+            }
         };
 
-        Some(Job { job_id, blob, target, algo, height, seed_hash, blob_bytes, difficulty })
+        Some(Job {
+            job_id,
+            blob,
+            target,
+            algo,
+            height,
+            seed_hash,
+            blob_bytes,
+            difficulty,
+        })
     }
 
     pub fn blob_bytes(&self) -> &[u8] {
@@ -157,7 +184,7 @@ impl SubmitResult {
     pub fn new(job_id: &str, nonce: u32, result: &[u8]) -> Self {
         SubmitResult {
             job_id: job_id.to_string(),
-            nonce: format!("{:08x}", nonce),
+            nonce: format_nonce(nonce),
             result: hex::encode(result),
         }
     }
@@ -168,20 +195,24 @@ impl SubmitResult {
 /// target 格式：大端十六进制字符串，长度 8（4 字节）或 16（8 字节）。
 /// 难度 = MAX_u64 / target_64 或 MAX_u32 / target_32。
 /// target 为 0 时返回 u64::MAX。
+pub fn format_nonce(nonce: u32) -> String {
+    hex::encode(nonce.to_le_bytes())
+}
+
 fn decode_target(target_hex: &str) -> Result<u64, String> {
-    let bytes =
-        hex::decode(target_hex).map_err(|e| format!("invalid hex in target '{}': {}", target_hex, e))?;
+    let bytes = hex::decode(target_hex)
+        .map_err(|e| format!("invalid hex in target '{}': {}", target_hex, e))?;
 
     let diff = match bytes.len() {
         4 => {
             let mut b = [0u8; 4];
             b.copy_from_slice(&bytes);
-            u32::from_be_bytes(b) as u64
+            u32::from_le_bytes(b) as u64
         }
         8 => {
             let mut b = [0u8; 8];
             b.copy_from_slice(&bytes);
-            u64::from_be_bytes(b)
+            u64::from_le_bytes(b)
         }
         n => return Err(format!("unsupported target length: {} bytes", n)),
     };
@@ -197,4 +228,23 @@ fn decode_target(target_hex: &str) -> Result<u64, String> {
     };
 
     Ok(max_val / diff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_stratum_target_as_little_endian() {
+        assert_eq!(
+            decode_target("c5a70000").unwrap(),
+            (u32::MAX as u64) / 0x0000_a7c5
+        );
+    }
+
+    #[test]
+    fn formats_nonce_in_blob_byte_order() {
+        assert_eq!(format_nonce(1), "01000000");
+        assert_eq!(format_nonce(0x1234_5678), "78563412");
+    }
 }

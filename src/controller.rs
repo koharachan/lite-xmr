@@ -1,14 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::cpu::{os_name, CpuInfo, APP_VERSION};
+use crate::cpu::{APP_VERSION, CpuInfo, os_name};
 use crate::doh;
 use crate::job;
-use crate::miner::{Miner, MinedShare};
+use crate::miner::{MinedShare, Miner};
 use crate::stats::MiningStats;
 use crate::stratum::{StratumClient, StratumEvent};
 use crate::taskbar::Taskbar;
@@ -27,7 +28,11 @@ impl Controller {
     }
 
     fn print_banner(&self) {
-        info!(" * ABOUT        lite-xmr/{} {} x86-64", APP_VERSION, os_name());
+        info!(
+            "* ABOUT        lite-xmr/{} {} x86-64",
+            APP_VERSION,
+            os_name()
+        );
     }
 
     pub async fn run(&mut self, config: &Config) -> anyhow::Result<()> {
@@ -45,17 +50,12 @@ impl Controller {
         } else {
             config.threads
         };
-
-        let _donate_level = 0u32;
-        let _donate_threads = (threads as f64 * (_donate_level as f64 / 100.0)).ceil() as u32;
-        let _mine_threads = threads.saturating_sub(_donate_threads);
-
         let mine_threads = threads;
 
         let mut pool_url = config.pool_url.clone();
 
         if config.doh {
-            info!("   * DOH          正在解析矿池地址...");
+            info!("* DOH          resolving pool address...");
             let (host, port) = match pool_url.rsplit_once(':') {
                 Some((h, p)) => {
                     let h = h.trim_start_matches('[').trim_end_matches(']');
@@ -66,16 +66,16 @@ impl Controller {
             match doh::resolve(host, port) {
                 Some(addr) => {
                     pool_url = addr.to_string();
-                    info!("   * DOH          已解析: {}", pool_url);
+                    info!("* DOH          resolved: {}", pool_url);
                 }
                 None => {
-                    warn!("   * DOH          解析失败，回退到系统 DNS");
+                    warn!("* DOH          resolve failed, falling back to system DNS");
                 }
             }
         }
 
-        info!("   * THREADS      {}", mine_threads);
-        info!("   * POOL         {}", pool_url);
+        info!("* THREADS      {}", mine_threads);
+        info!("* POOL         {}", pool_url);
 
         let stats = Arc::new(MiningStats::new());
 
@@ -84,10 +84,9 @@ impl Controller {
         let (event_tx, mut event_rx) = mpsc::channel::<StratumEvent>(256);
 
         let mut mined_shares = if config.keepalive {
-            info!("   * KEEPALIVE    保持连接活跃，不挖矿");
+            info!("* KEEPALIVE    connection only, mining disabled");
             mpsc::channel::<MinedShare>(1).1
         } else {
-            info!("   * DONATE       0%");
             let miner = Miner::new(mine_threads, stats.clone());
             miner.start(job_rx).await
         };
@@ -100,17 +99,24 @@ impl Controller {
         );
 
         let keepalive = config.keepalive;
-        let stratum_handle = tokio::spawn(async move {
-            stratum.run(job_tx, submit_rx, event_tx, keepalive).await
-        });
+        let stratum_handle =
+            tokio::spawn(async move { stratum.run(job_tx, submit_rx, event_tx, keepalive).await });
 
         let mut shutdown_rx = install_signal_handler();
 
+        let logged_in = Arc::new(AtomicBool::new(false));
+        let stats_logged_in = logged_in.clone();
         let stats_clone = stats.clone();
         let stats_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
+                if !stats_logged_in.load(Ordering::Acquire) {
+                    continue;
+                }
+                if stats_clone.total_hashes() == 0 {
+                    continue;
+                }
                 info!(
                     "speed {}/{} accepted/{} rejected/{}s",
                     stats_clone.format_hashrate(),
@@ -125,17 +131,20 @@ impl Controller {
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
-                    info!("正在关闭...");
+                    info!("shutting down...");
                     break;
                 }
 
                 Some(event) = event_rx.recv() => {
                     match event {
                         StratumEvent::NewJob(job) => {
-                            let height = job.height;
-                            let _target = &*job.target;
-                            debug!("new job: {} diff={} algo={} height={:?}",
-                                job.job_id, job.difficulty(), job.algo, height);
+                            debug!(
+                                "new job: {} diff={} algo={} height={:?}",
+                                job.job_id,
+                                job.difficulty(),
+                                job.algo,
+                                job.height
+                            );
                         }
                         StratumEvent::Accepted => {
                             stats.record_accepted();
@@ -146,9 +155,11 @@ impl Controller {
                             stats.record_rejected();
                         }
                         StratumEvent::Connected => {
+                            logged_in.store(true, Ordering::Release);
                             info!("connected");
                         }
                         StratumEvent::Disconnected(reason) => {
+                            logged_in.store(false, Ordering::Release);
                             warn!("disconnected: {}", reason);
                         }
                     }
@@ -180,7 +191,7 @@ fn install_signal_handler() -> tokio::sync::watch::Receiver<bool> {
     let (tx, rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        info!("收到 Ctrl+C，正在关闭...");
+        info!("received Ctrl+C, shutting down...");
         let _ = tx.send(true);
     });
     rx

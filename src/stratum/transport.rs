@@ -18,10 +18,12 @@ impl StratumTransport {
         debug!("TCP 连接已建立: {}", addr);
 
         if use_tls {
-            let connector = TlsConnector::from(Arc::new(rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
-                .with_no_client_auth()));
+            let connector = TlsConnector::from(Arc::new(
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+                    .with_no_client_auth(),
+            ));
 
             let server_name: rustls::pki_types::ServerName<'static> = addr
                 .split(':')

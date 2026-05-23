@@ -53,7 +53,10 @@ impl CpuInfo {
 
         let aes_ni = features.map(|f| f.has_aesni()).unwrap_or(false);
         let avx2 = ext_features.as_ref().map(|f| f.has_avx2()).unwrap_or(false);
-        let avx512f = ext_features.as_ref().map(|f| f.has_avx512f()).unwrap_or(false);
+        let avx512f = ext_features
+            .as_ref()
+            .map(|f| f.has_avx512f())
+            .unwrap_or(false);
         let sha_ext = ext_features.as_ref().map(|f| f.has_sha()).unwrap_or(false);
 
         let (l2_cache, l3_cache, numa_nodes) = detect_cache_topo();
@@ -80,7 +83,7 @@ impl CpuInfo {
 
     pub fn print_summary(&self) {
         info!(
-            "   * CPU          {} {}C/{}T L2:{:.1} MB L3:{:.1} MB NUMA:{} {}{} x86-64",
+            "* CPU          {} {}C/{}T L2:{:.1} MB L3:{:.1} MB NUMA:{} {}{} x86-64",
             self.brand,
             self.physical_cores,
             self.logical_cores,
@@ -92,12 +95,12 @@ impl CpuInfo {
         );
 
         info!(
-            "   * MEMORY       {:.1}/{:.1} GB",
+            "* MEMORY       {:.1}/{:.1} GB",
             (self.total_memory - self.free_memory) as f64 / 1_073_741_824.0,
             self.total_memory as f64 / 1_073_741_824.0,
         );
 
-        info!("   * DONATE       0%");
+        info!("* DONATE       0%");
     }
 
     /// RandomX 用物理核心（超线程无益），保留 1 核给系统。
@@ -135,10 +138,7 @@ fn detect_cache_topo() -> (u64, u64, usize) {
         })
         .unwrap_or(0);
 
-    let nodes = topo
-        .objects_with_type(ObjectType::NUMANode)
-        .count()
-        .max(1);
+    let nodes = topo.objects_with_type(ObjectType::NUMANode).count().max(1);
 
     (l2, l3, nodes)
 }

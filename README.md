@@ -24,13 +24,15 @@ Rust + C/C++ 实现，无第三方 C/C++ 依赖，无需手动下载依赖，静
 
 ## 性能
 
-| 配置 | 算力 (H/s) |
-|------|-----------|
-| AMD Ryzen 7 3700X | ~10,000 |
-| Intel Core i7-6700 | ~7,500 |
-| AMD Ryzen Threadripper 2950X | ~15,000 |
+RandomX 实测算力受 CPU 架构、内存时序、线程绑定、是否启用大页等影响很大，不建议用固定机型表做“保底承诺”。
 
-> 实际算力取决于系统配置、内存速度和 CPU 缓存。
+以你提到的 Intel i7-12700ES 为例，约 `6k H/s` 属于常见区间（具体仍以本机实测为准）。
+
+建议用以下命令在你的环境直接压测：
+
+```bash
+./lite-xmr --bench 30 -t 0
+```
 
 ## 系统要求
 
@@ -77,6 +79,7 @@ cargo build --release
 | `-r, --retries` | 连接重试次数 (可选) | `-r 5` |
 | `-R, --retry-pause` | 重试间隔秒数 (可选) | `-R 10` |
 | `--tls` | 启用 TLS 连接 (可选) | `--tls` |
+| `--doh` | 启用 DNS over HTTPS 解析矿池域名 | `--doh` |
 | `-v, --verbose` | 输出详细日志 | `-v` |
 | `-V, --version` | 显示版本信息 | `-V` |
 | `-h, --help` | 显示帮助信息 | `-h` |
@@ -90,8 +93,23 @@ cargo build --release
 # 使用 TLS 连接到矿池
 ./lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls -t 8
 
+# 使用 DoH 解析矿池域名（适合本地 DNS 不稳定场景）
+./lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls --doh -t 8
+
 # 自定义重试参数
 ./lite-xmr -o pool.supportxmr.com:3333 -u YOUR_WALLET -r 10 -R 30 -t 16
+```
+
+### 启用 DoH（配置文件）
+
+`config.toml` 示例：
+
+```toml
+[pool]
+url = "pool.supportxmr.com:443"
+user = "YOUR_WALLET"
+tls = true
+doh = true
 ```
 
 ## 支持的矿池

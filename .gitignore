@@ -1,9 +1,9 @@
-/target/
-**/*.rs.bk
-Cargo.lock
-/.vs/
-/test/
-/.venv-coding-tools/
-/coding-tools-mcp*.log
-*.out.log
-*.err.log
+target/
+*.log
+*.tmp
+*.bak
+
+# Local build artifact that may appear in repo root
+lite-xmr
+lite-xmr.exe
+.venv-coding-tools/

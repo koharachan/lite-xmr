@@ -231,6 +231,9 @@ async fn mining_loop(
                 if let Err(e) = writer.write_all(msg.as_bytes()).await {
                     return Err(Error::Network(e.to_string()));
                 }
+                if let Err(e) = writer.flush().await {
+                    return Err(Error::Network(e.to_string()));
+                }
             }
         }
     }

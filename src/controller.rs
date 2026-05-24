@@ -44,13 +44,24 @@ impl Controller {
 
         let cpu_info = CpuInfo::detect();
         cpu_info.print_summary();
+        let plan = cpu_info.build_thread_plan();
 
+        let planned_pus = if config.use_e_cores {
+            plan.preferred_with_e()
+        } else {
+            plan.preferred_p_only()
+        };
         let threads = if config.threads == 0 {
-            cpu_info.recommended_threads()
+            planned_pus.len().max(1) as u32
         } else {
             config.threads
         };
         let mine_threads = threads;
+        let worker_pus = planned_pus
+            .iter()
+            .copied()
+            .take(mine_threads as usize)
+            .collect::<Vec<_>>();
 
         let mut pool_url = config.pool_url.clone();
 
@@ -75,6 +86,7 @@ impl Controller {
         }
 
         info!("* THREADS      {}", mine_threads);
+        info!("* THREAD PLAN  {:?}", worker_pus);
         info!("* POOL         {}", pool_url);
 
         let stats = Arc::new(MiningStats::new());
@@ -87,7 +99,7 @@ impl Controller {
             info!("* KEEPALIVE    connection only, mining disabled");
             mpsc::channel::<MinedShare>(1).1
         } else {
-            let miner = Miner::new(mine_threads, stats.clone());
+            let miner = Miner::new(mine_threads, worker_pus, stats.clone());
             miner.start(job_rx).await
         };
 
@@ -124,6 +136,13 @@ impl Controller {
                     stats_clone.rejected(),
                     stats_clone.uptime_secs(),
                 );
+                println!(
+                    "speed {}/{} accepted/{} rejected/{}s",
+                    stats_clone.format_hashrate(),
+                    stats_clone.accepted(),
+                    stats_clone.rejected(),
+                    stats_clone.uptime_secs(),
+                );
             }
         });
 
@@ -149,10 +168,12 @@ impl Controller {
                         StratumEvent::Accepted => {
                             stats.record_accepted();
                             info!("accepted");
+                            println!("accepted");
                         }
                         StratumEvent::Rejected(reason) => {
                             warn!("rejected: {}", reason);
                             stats.record_rejected();
+                            println!("rejected: {}", reason);
                         }
                         StratumEvent::Connected => {
                             logged_in.store(true, Ordering::Release);
@@ -169,7 +190,13 @@ impl Controller {
                     let job_id = share.job_id.clone();
                     let nonce = share.nonce.clone();
                     let result = share.result.clone();
-                    let _ = submit_tx_clone.try_send((job_id.clone(), nonce.clone(), result));
+                    if submit_tx_clone
+                        .send((job_id.clone(), nonce.clone(), result))
+                        .await
+                        .is_err()
+                    {
+                        warn!("submit queue closed");
+                    }
                     debug!("share: job={} nonce={}", job_id, nonce);
                 }
             }

@@ -3,3 +3,7 @@
 Cargo.lock
 /.vs/
 /test/
+/.venv-coding-tools/
+/coding-tools-mcp*.log
+*.out.log
+*.err.log

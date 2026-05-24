@@ -1,0 +1,19 @@
+$:
+  push:
+    - name: rust-release-build
+      docker:
+        image: rust:1-bookworm
+      stages:
+        - name: install native build tools
+          script: |
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential \
+              clang \
+              cmake \
+              nasm \
+              pkg-config
+        - name: test
+          script: cargo test --release
+        - name: build
+          script: cargo build --release

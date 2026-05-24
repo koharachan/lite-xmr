@@ -1,20 +1,34 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info};
 
 use crate::job::{self, Job};
+use crate::randomx;
 use crate::stats::MiningStats;
 
-#[derive(Clone)]
-struct SharedDataset(randomx_rs::RandomXDataset);
-
-unsafe impl Send for SharedDataset {}
-unsafe impl Sync for SharedDataset {}
+fn pin_current_thread(pu: Option<usize>) {
+    use hwlocality::cpu::binding::CpuBindingFlags;
+    use hwlocality::cpu::cpuset::CpuSet;
+    let Some(pu) = pu else {
+        return;
+    };
+    let topo = match hwlocality::Topology::new() {
+        Ok(t) => t,
+        Err(e) => {
+            debug!("hwloc init failed for affinity bind: {}", e);
+            return;
+        }
+    };
+    let mut set = CpuSet::new();
+    set.set(pu);
+    if let Err(e) = topo.bind_cpu(&set, CpuBindingFlags::THREAD) {
+        debug!("bind worker to PU {} failed: {}", pu, e);
+    }
+}
 
 enum DatasetState {
     Empty,
@@ -23,7 +37,7 @@ enum DatasetState {
     },
     Ready {
         seed: String,
-        dataset: SharedDataset,
+        dataset: Arc<randomx::Dataset>,
     },
     Failed {
         seed: String,
@@ -43,7 +57,7 @@ impl RxDatasetCache {
         }
     }
 
-    fn get_or_build(&self, seed: &str, seed_bytes: &[u8]) -> Option<SharedDataset> {
+    fn get_or_build(&self, seed: &str, seed_bytes: &[u8]) -> Option<Arc<randomx::Dataset>> {
         let mut state = self.state.lock().unwrap();
         loop {
             match &*state {
@@ -74,7 +88,6 @@ impl RxDatasetCache {
         let mut state = self.state.lock().unwrap();
         match dataset {
             Ok(dataset) => {
-                let dataset = SharedDataset(dataset);
                 *state = DatasetState::Ready {
                     seed: seed.to_string(),
                     dataset: dataset.clone(),
@@ -105,10 +118,8 @@ impl RxDatasetCache {
 
 fn build_full_dataset(
     seed_bytes: &[u8],
-) -> Result<randomx_rs::RandomXDataset, randomx_rs::RandomXError> {
-    let cache_flags = randomx_rs::RandomXFlag::get_recommended_flags();
-    let cache = randomx_rs::RandomXCache::new(cache_flags, seed_bytes)?;
-    randomx_rs::RandomXDataset::new(randomx_rs::RandomXFlag::FLAG_DEFAULT, cache, 0)
+) -> anyhow::Result<Arc<randomx::Dataset>> {
+    randomx::Dataset::new(seed_bytes)
 }
 
 fn short_seed(seed: &str) -> &str {
@@ -125,15 +136,17 @@ pub struct MinedShare {
 
 pub struct Miner {
     thread_count: u32,
+    pu_plan: Vec<usize>,
     stats: Arc<MiningStats>,
     #[allow(dead_code)]
     enabled: AtomicBool,
 }
 
 impl Miner {
-    pub fn new(thread_count: u32, stats: Arc<MiningStats>) -> Self {
+    pub fn new(thread_count: u32, pu_plan: Vec<usize>, stats: Arc<MiningStats>) -> Self {
         Miner {
             thread_count,
+            pu_plan,
             stats,
             enabled: AtomicBool::new(true),
         }
@@ -162,40 +175,17 @@ impl Miner {
             let submit_tx = submit_tx.clone();
             let stats = self.stats.clone();
             let thread_count = self.thread_count;
+            let pin_pu = self.pu_plan.get(worker_id as usize).copied();
             let dataset_cache = dataset_cache.clone();
-
-            let (job_tx, job_rx_sync) = std_mpsc::channel::<Option<Job>>();
-
-            let mut job_rx_clone = job_rx.clone();
+            let job_rx_clone = job_rx.clone();
             let rt_handle = tokio::runtime::Handle::current();
-            thread::spawn(move || {
-                let mut current_job: Option<Job> = None;
-                loop {
-                    match rt_handle.block_on(job_rx_clone.changed()) {
-                        Ok(()) => {
-                            let job_ref = job_rx_clone.borrow_and_update();
-                            let new_job = job_ref.clone();
-                            if new_job.as_ref().map(|j| &j.job_id)
-                                != current_job.as_ref().map(|j| &j.job_id)
-                            {
-                                current_job = new_job.clone();
-                                if job_tx.send(new_job).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            let _ = job_tx.send(None);
-                            break;
-                        }
-                    }
-                }
-            });
 
             thread::spawn(move || {
                 worker_loop_sync(
                     worker_id,
-                    job_rx_sync,
+                    pin_pu,
+                    job_rx_clone,
+                    rt_handle,
                     submit_tx,
                     stats,
                     thread_count,
@@ -211,31 +201,43 @@ impl Miner {
 
 fn worker_loop_sync(
     worker_id: u32,
-    job_rx: std_mpsc::Receiver<Option<Job>>,
+    pin_pu: Option<usize>,
+    mut job_rx: watch::Receiver<Option<Job>>,
+    rt_handle: tokio::runtime::Handle,
     submit_tx: mpsc::Sender<MinedShare>,
     stats: Arc<MiningStats>,
     thread_count: u32,
     dataset_cache: Arc<RxDatasetCache>,
 ) {
-    info!("Worker #{} started", worker_id);
+    pin_current_thread(pin_pu);
+    debug!("Worker #{} started", worker_id);
 
     let mut current_seed: Option<String> = None;
-    let mut vm: Option<randomx_rs::RandomXVM> = None;
+    let mut vm: Option<randomx::Vm> = None;
     let mut current_job: Option<Job> = None;
     let mut nonce: u32 = worker_id;
+    const PIPELINE_SIZE: usize = 16;
+    let mut blobs: Vec<Vec<u8>> = (0..PIPELINE_SIZE).map(|_| vec![0u8; 0]).collect();
 
     loop {
-        if let Ok(Some(new_job)) = job_rx.try_recv() {
-            current_job = Some(new_job);
+        let latest = job_rx.borrow_and_update().clone();
+        if latest.as_ref().map(|j| &j.job_id) != current_job.as_ref().map(|j| &j.job_id) {
+            current_job = latest;
             nonce = worker_id;
-        } else if current_job.is_none() {
-            match job_rx.recv() {
-                Ok(Some(job)) => {
-                    current_job = Some(job);
-                    nonce = worker_id;
+            if let Some(job) = &current_job {
+                let template = job.blob_bytes();
+                for b in &mut blobs {
+                    b.clear();
+                    b.extend_from_slice(template);
                 }
-                Ok(None) | Err(_) => break,
             }
+        }
+
+        if current_job.is_none() {
+            if rt_handle.block_on(job_rx.changed()).is_err() {
+                break;
+            }
+            continue;
         }
 
         let job = match &current_job {
@@ -273,6 +275,7 @@ fn worker_loop_sync(
                 &stats,
                 thread_count,
                 &mut nonce,
+                &mut blobs,
             );
         }
     }
@@ -282,76 +285,162 @@ fn create_randomx_vm(
     seed: &str,
     seed_bytes: &[u8],
     dataset_cache: &RxDatasetCache,
-) -> Result<randomx_rs::RandomXVM, randomx_rs::RandomXError> {
-    let flags = randomx_rs::RandomXFlag::get_recommended_flags();
-    if let Some(dataset) = dataset_cache.get_or_build(seed, seed_bytes) {
-        let full_mem_flags = flags | randomx_rs::RandomXFlag::FLAG_FULL_MEM;
-        match randomx_rs::RandomXVM::new(full_mem_flags, None, Some(dataset.0.clone())) {
-            Ok(vm) => return Ok(vm),
-            Err(e) => {
-                error!(
-                    "RandomX full-mem VM failed seed={}: {}; falling back to light mode",
-                    short_seed(seed),
-                    e
-                );
-            }
-        }
-    }
-
-    let cache = randomx_rs::RandomXCache::new(flags, seed_bytes)?;
-    randomx_rs::RandomXVM::new(flags, Some(cache), None)
+) -> anyhow::Result<randomx::Vm> {
+    let dataset = dataset_cache
+        .get_or_build(seed, seed_bytes)
+        .ok_or_else(|| anyhow::anyhow!("failed to initialize RandomX dataset"))?;
+    randomx::Vm::new(dataset)
 }
 
 fn mine_one_batch(
-    worker_id: u32,
-    vm: &randomx_rs::RandomXVM,
+    _worker_id: u32,
+    vm: &randomx::Vm,
     job: &Job,
     submit_tx: &mpsc::Sender<MinedShare>,
     stats: &MiningStats,
     thread_count: u32,
     nonce: &mut u32,
+    blobs: &mut [Vec<u8>],
 ) {
     const BATCH_SIZE: u32 = 1024;
-
-    let mut blob = job.blob_bytes().to_vec();
+    const PIPELINE_SIZE: usize = 16;
     let nonce_offset = job::NONCE_OFFSET;
     let target_diff = job.difficulty();
+    let mut remaining = BATCH_SIZE;
 
-    for _ in 0..BATCH_SIZE {
-        if nonce_offset + 4 <= blob.len() {
-            blob[nonce_offset..nonce_offset + 4].copy_from_slice(&(*nonce).to_le_bytes());
-        }
+    while remaining > 0 {
+        let count = (remaining as usize).min(PIPELINE_SIZE);
+        let mut nonces = [0u32; PIPELINE_SIZE];
 
-        let hash = match vm.calculate_hash(&blob) {
-            Ok(h) => h,
-            Err(e) => {
-                error!("Worker #{} hash error: {}", worker_id, e);
-                break;
+        for i in 0..count {
+            nonces[i] = *nonce;
+            if nonce_offset + 4 <= blobs[i].len() {
+                blobs[i][nonce_offset..nonce_offset + 4].copy_from_slice(&(*nonce).to_le_bytes());
             }
-        };
-
-        stats.record_hashes(1);
-
-        if check_hash_difficulty(&hash, target_diff) {
-            let share = MinedShare {
-                job_id: job.job_id.clone(),
-                nonce: job::format_nonce(*nonce),
-                result: hex::encode(&hash),
-            };
-            let _ = submit_tx.try_send(share);
+            *nonce = (*nonce).wrapping_add(thread_count);
         }
 
-        *nonce = (*nonce).wrapping_add(thread_count);
+        let mut hashes = [[0u8; randomx::HASH_SIZE]; PIPELINE_SIZE];
+        if count == PIPELINE_SIZE {
+            let inputs: [&[u8]; PIPELINE_SIZE] = std::array::from_fn(|i| blobs[i].as_slice());
+            vm.hash_batch(inputs, &mut hashes);
+            stats.record_hashes(PIPELINE_SIZE as u64);
+        } else {
+            for i in 0..count {
+                vm.hash_one(&blobs[i], &mut hashes[i]);
+            }
+            stats.record_hashes(count as u64);
+        }
+
+        for i in 0..count {
+            if check_hash_difficulty(&hashes[i], target_diff) {
+                let share = MinedShare {
+                    job_id: job.job_id.clone(),
+                    nonce: job::format_nonce(nonces[i]),
+                    result: hex::encode(hashes[i]),
+                };
+                let _ = submit_tx.try_send(share);
+            }
+        }
+        remaining -= count as u32;
     }
 }
 
+pub fn run_benchmark(thread_count: u32, seconds: u64, pu_plan: Option<&[usize]>) -> anyhow::Result<u64> {
+    let thread_count = thread_count.max(1);
+    let seconds = seconds.max(1);
+    let seed_bytes = [0u8; 32];
+    let dataset = randomx::Dataset::new(&seed_bytes)?;
+
+    info!(
+        "benchmark starting: threads={} duration={}s flags=0x{:x}",
+        thread_count,
+        seconds,
+        randomx::recommended_flags()
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let start = Arc::new(AtomicBool::new(false));
+    let ready_workers = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let total_hashes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut handles = Vec::with_capacity(thread_count as usize);
+
+    for worker_id in 0..thread_count {
+        let stop = stop.clone();
+        let start = start.clone();
+        let ready_workers = ready_workers.clone();
+        let total_hashes = total_hashes.clone();
+        let dataset = dataset.clone();
+
+        let pin_pu = pu_plan.and_then(|v| v.get(worker_id as usize)).copied();
+        handles.push(thread::spawn(move || {
+            pin_current_thread(pin_pu);
+            let vm = match randomx::Vm::new(dataset) {
+                Ok(vm) => vm,
+                Err(e) => {
+                    error!("benchmark worker #{} failed to create VM: {}", worker_id, e);
+                    return;
+                }
+            };
+
+            ready_workers.fetch_add(1, Ordering::Release);
+            while !start.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+
+            let mut nonce = worker_id;
+            let mut blobs = vec![vec![0u8; 76]; 16];
+            while !stop.load(Ordering::Relaxed) {
+                for blob in &mut blobs {
+                    blob[job::NONCE_OFFSET..job::NONCE_OFFSET + 4]
+                        .copy_from_slice(&nonce.to_le_bytes());
+                    nonce = nonce.wrapping_add(thread_count);
+                }
+                let inputs: [&[u8]; 16] = std::array::from_fn(|i| blobs[i].as_slice());
+                let mut out = [[0u8; randomx::HASH_SIZE]; 16];
+                vm.hash_batch(inputs, &mut out);
+                total_hashes.fetch_add(16, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    while ready_workers.load(Ordering::Acquire) < thread_count as u64 {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let started = Instant::now();
+    start.store(true, Ordering::Release);
+    thread::sleep(Duration::from_secs(seconds));
+    stop.store(true, Ordering::Release);
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let hashes = total_hashes.load(Ordering::Relaxed);
+    let hashrate = (hashes as f64 / elapsed) as u64;
+    info!(
+        "benchmark result: {} hashes in {:.2}s = {}",
+        hashes,
+        elapsed,
+        crate::stats::format_hashrate(hashrate)
+    );
+    println!(
+        "benchmark result: {} hashes in {:.2}s = {}",
+        hashes,
+        elapsed,
+        crate::stats::format_hashrate(hashrate)
+    );
+    Ok(hashrate)
+}
+
 fn check_hash_difficulty(hash: &[u8], target_difficulty: u64) -> bool {
-    if hash.len() < 8 || target_difficulty == 0 {
+    if hash.len() < 32 || target_difficulty == 0 {
         return false;
     }
 
     let hash_val = u64::from_le_bytes([
-        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
+        hash[24], hash[25], hash[26], hash[27], hash[28], hash[29], hash[30], hash[31],
     ]);
     hash_val < u64::MAX / target_difficulty
 }
@@ -364,7 +453,8 @@ mod tests {
     fn difficulty_check_accepts_hashes_below_target() {
         let difficulty = 2;
         let target = u64::MAX / difficulty;
-        let hash = (target - 1).to_le_bytes();
+        let mut hash = [0xff; 32];
+        hash[24..32].copy_from_slice(&(target - 1).to_le_bytes());
 
         assert!(check_hash_difficulty(&hash, difficulty));
     }
@@ -373,7 +463,19 @@ mod tests {
     fn difficulty_check_rejects_hashes_at_or_above_target() {
         let difficulty = 2;
         let target = u64::MAX / difficulty;
-        let hash = target.to_le_bytes();
+        let mut hash = [0; 32];
+        hash[24..32].copy_from_slice(&target.to_le_bytes());
+
+        assert!(!check_hash_difficulty(&hash, difficulty));
+    }
+
+    #[test]
+    fn difficulty_check_uses_high_64_bits_of_hash() {
+        let difficulty = 2;
+        let target = u64::MAX / difficulty;
+        let mut hash = [0; 32];
+        hash[0..8].copy_from_slice(&(target - 1).to_le_bytes());
+        hash[24..32].copy_from_slice(&target.to_le_bytes());
 
         assert!(!check_hash_difficulty(&hash, difficulty));
     }

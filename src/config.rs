@@ -24,6 +24,8 @@ pub struct Args {
     pub keepalive: bool,
     pub doh: bool,
     pub background: bool,
+    pub bench_seconds: Option<u64>,
+    pub use_e_cores: bool,
 }
 
 impl Args {
@@ -51,6 +53,8 @@ impl Args {
             keepalive: pargs.contains(["-k", "--keepalive"]),
             doh: pargs.contains("--doh"),
             background: pargs.contains(["-B", "--background"]),
+            bench_seconds: pargs.opt_value_from_str("--bench")?,
+            use_e_cores: pargs.contains("--use-e-cores"),
         };
 
         let remaining = pargs.finish();
@@ -152,6 +156,9 @@ pub struct FileConfig {
 
     #[serde(default)]
     pub verbose: Option<u32>,
+
+    #[serde(default)]
+    pub use_e_cores: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +174,7 @@ pub struct Config {
     pub keepalive: bool,
     pub doh: bool,
     pub background: bool,
+    pub use_e_cores: bool,
 }
 
 fn first_non_empty(a: Option<String>, b: Option<String>) -> Option<String> {
@@ -262,6 +270,11 @@ impl Config {
             keepalive: args.keepalive || pool.map(|p| p.keepalive).unwrap_or(false),
             doh: args.doh || pool.map(|p| p.doh).unwrap_or(false),
             background,
+            use_e_cores: args.use_e_cores
+                || file_cfg
+                    .as_ref()
+                    .and_then(|c| c.use_e_cores)
+                    .unwrap_or(false),
         })
     }
 }

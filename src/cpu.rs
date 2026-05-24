@@ -1,6 +1,7 @@
 use raw_cpuid::CpuId;
 use sysinfo::System;
 use tracing::{info, warn};
+use std::collections::BTreeSet;
 
 pub fn os_name() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -31,6 +32,42 @@ pub struct CpuInfo {
     pub sha_ext: bool,
     pub total_memory: u64,
     pub free_memory: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThreadPlan {
+    pub p_core_pus: Vec<usize>,
+    pub e_core_pus: Vec<usize>,
+}
+
+impl ThreadPlan {
+    pub fn preferred_p_only(&self) -> Vec<usize> {
+        if self.p_core_pus.is_empty() {
+            return self.all_pus();
+        }
+        self.p_core_pus.clone()
+    }
+
+    pub fn preferred_with_e(&self) -> Vec<usize> {
+        let mut out = self.preferred_p_only();
+        for pu in &self.e_core_pus {
+            if !out.contains(pu) {
+                out.push(*pu);
+            }
+        }
+        out
+    }
+
+    pub fn all_pus(&self) -> Vec<usize> {
+        let mut s = BTreeSet::new();
+        for pu in &self.p_core_pus {
+            s.insert(*pu);
+        }
+        for pu in &self.e_core_pus {
+            s.insert(*pu);
+        }
+        s.into_iter().collect()
+    }
 }
 
 impl CpuInfo {
@@ -103,9 +140,13 @@ impl CpuInfo {
         info!("* DONATE       0%");
     }
 
-    /// RandomX 用物理核心（超线程无益），保留 1 核给系统。
+    /// Default to physical cores for RandomX. Users can still override with -t/--threads.
     pub fn recommended_threads(&self) -> u32 {
-        (self.physical_cores.saturating_sub(1)).max(1) as u32
+        self.physical_cores.max(1) as u32
+    }
+
+    pub fn build_thread_plan(&self) -> ThreadPlan {
+        build_thread_plan()
     }
 }
 
@@ -141,4 +182,99 @@ fn detect_cache_topo() -> (u64, u64, usize) {
     let nodes = topo.objects_with_type(ObjectType::NUMANode).count().max(1);
 
     (l2, l3, nodes)
+}
+
+fn build_thread_plan() -> ThreadPlan {
+    let topo = match hwlocality::Topology::new() {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("hwloc init failed for thread plan: {}, using fallback", e);
+            let fallback = (0..num_cpus::get()).collect::<Vec<_>>();
+            return ThreadPlan {
+                p_core_pus: fallback,
+                e_core_pus: Vec::new(),
+            };
+        }
+    };
+
+    let (mut p, mut e) = split_p_e_by_core_shape(&topo);
+
+    if p.is_empty() && e.is_empty() {
+        let all = one_pu_per_core(&topo, &topo.cpuset());
+        return ThreadPlan {
+            p_core_pus: all,
+            e_core_pus: Vec::new(),
+        };
+    }
+
+    if p.is_empty() {
+        p = e.clone();
+        e.clear();
+    }
+
+    info!(
+        "* TOPOLOGY     P-core PUs: {:?} E-core PUs: {:?}",
+        p, e
+    );
+    ThreadPlan {
+        p_core_pus: p,
+        e_core_pus: e,
+    }
+}
+
+fn one_pu_per_core(topo: &hwlocality::Topology, cpuset: &hwlocality::cpu::cpuset::CpuSet) -> Vec<usize> {
+    use hwlocality::object::types::ObjectType;
+
+    let mut seen_cores = BTreeSet::new();
+    let mut out = Vec::new();
+    for pu_os in cpuset.iter_set() {
+        let pu_os = usize::from(pu_os);
+        let Some(pu_obj) = topo.pu_with_os_index(pu_os) else {
+            continue;
+        };
+        let mut core_key = None;
+        for a in pu_obj.ancestors() {
+            if a.object_type() == ObjectType::Core {
+                core_key = a.os_index().or(Some(a.global_persistent_index() as usize));
+                break;
+            }
+        }
+        let key = core_key.unwrap_or(pu_os);
+        if seen_cores.insert(key) {
+            out.push(pu_os);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+fn split_p_e_by_core_shape(topo: &hwlocality::Topology) -> (Vec<usize>, Vec<usize>) {
+    use hwlocality::object::types::ObjectType;
+    let mut smt2 = Vec::new();
+    let mut smt1 = Vec::new();
+
+    for core in topo.objects_with_type(ObjectType::Core) {
+        let mut pus = core
+            .cpuset()
+            .map(|s| s.iter_set().map(usize::from).collect::<Vec<_>>())
+            .unwrap_or_default();
+        pus.sort_unstable();
+        pus.dedup();
+        if let Some(&first_pu) = pus.first() {
+            if pus.len() >= 2 {
+                smt2.push(first_pu);
+            } else {
+                smt1.push(first_pu);
+            }
+        }
+    }
+
+    smt2.sort_unstable();
+    smt1.sort_unstable();
+
+    if !smt2.is_empty() {
+        (smt2, smt1)
+    } else {
+        (smt1, Vec::new())
+    }
 }

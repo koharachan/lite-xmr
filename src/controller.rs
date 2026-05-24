@@ -52,7 +52,11 @@ impl Controller {
             plan.preferred_p_only()
         };
         let threads = if config.threads == 0 {
-            planned_pus.len().max(1) as u32
+            if planned_pus.is_empty() {
+                cpu_info.recommended_threads()
+            } else {
+                planned_pus.len() as u32
+            }
         } else {
             config.threads
         };

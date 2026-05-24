@@ -1,16 +1,14 @@
-use std::process;
-
 pub fn daemonize() {
     #[cfg(target_family = "unix")]
     {
         if unsafe { libc::fork() } != 0 {
-            process::exit(0);
+            std::process::exit(0);
         }
         unsafe {
             libc::setsid();
         }
         if unsafe { libc::fork() } != 0 {
-            process::exit(0);
+            std::process::exit(0);
         }
         unsafe {
             libc::chdir(b"/\0".as_ptr() as *const _);

@@ -1,6 +1,6 @@
 $:
   push:
-    - name: rust-release-build
+    - name: rust-ci
       docker:
         image: rust:1-bookworm
       stages:
@@ -17,3 +17,75 @@ $:
           script: cargo test --release
         - name: build
           script: cargo build --release
+
+    - name: rust-release
+      tag:
+        include:
+          - v*
+      docker:
+        image: rust:1-bookworm
+      stages:
+        - name: install native build tools
+          script: |
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential \
+              clang \
+              cmake \
+              curl \
+              jq \
+              nasm \
+              pkg-config \
+              zip
+        - name: build release artifact
+          script: |
+            set -euo pipefail
+            cargo build --release
+            mkdir -p dist
+            cp target/release/lite-xmr dist/lite-xmr
+            cd dist
+            zip -9 "lite-xmr-${CNB_TAG}.linux-amd64.zip" lite-xmr
+            cd ..
+        - name: publish release
+          script: |
+            set -euo pipefail
+
+            if [ -z "${CNB_TAG:-}" ]; then
+              echo "CNB_TAG is empty, skip publishing."
+              exit 0
+            fi
+
+            TOKEN="${CNB_TOKEN:-${GIT_ACCESS_TOKEN:-${GITEA_TOKEN:-}}}"
+            if [ -z "${TOKEN}" ]; then
+              echo "Missing release token. Set CNB_TOKEN or GIT_ACCESS_TOKEN or GITEA_TOKEN."
+              exit 1
+            fi
+
+            REPO_URL="$(git remote get-url origin)"
+            REPO_PATH="$(echo "${REPO_URL}" | sed -E 's#https?://[^/]+/##; s#\.git$##')"
+            API_BASE="https://cnb.cool/open-api/v1"
+
+            RELEASE_PAYLOAD="$(jq -n \
+              --arg tag "${CNB_TAG}" \
+              --arg name "${CNB_TAG}" \
+              --arg body "Automated release for ${CNB_TAG}" \
+              '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')"
+
+            RELEASE_JSON="$(curl -sS -X POST \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${RELEASE_PAYLOAD}" \
+              "${API_BASE}/repos/${REPO_PATH}/releases")"
+
+            RELEASE_ID="$(echo "${RELEASE_JSON}" | jq -r '.id // empty')"
+            if [ -z "${RELEASE_ID}" ]; then
+              echo "Create release failed: ${RELEASE_JSON}"
+              exit 1
+            fi
+
+            ASSET="dist/lite-xmr-${CNB_TAG}.linux-amd64.zip"
+            curl -sS -X POST \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: application/zip" \
+              --data-binary @"${ASSET}" \
+              "${API_BASE}/repos/${REPO_PATH}/releases/${RELEASE_ID}/assets?name=$(basename "${ASSET}")"

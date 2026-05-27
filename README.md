@@ -3,104 +3,130 @@
 <div align="center">
 
 ![Version](https://img.shields.io/badge/version-1.1.0-blue)
-![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)
+![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
-**轻量级、高性能 Monero (XMR) CPU 挖矿工具**
-
-Rust + C/C++ 混合实现（RandomX 依赖 C/C++），无需手动下载依赖，静态编译，开箱即用。
+**A compact Monero (XMR) CPU miner written mostly in Rust, with RandomX native code where it matters.**
 
 </div>
 
 ---
 
-## 特性
+## What This Is
 
-- **Rust 主体实现** - 挖矿核心通过 RandomX C/C++ 库（FFI）调用，连接控制与调度逻辑为 Rust
-- **轻量高效** - 专为 x86_64 架构优化，内存占用低
-- **零抽水** - 开源透明，无开发者的秘密捐赠算力
-- **静态编译** - 单二进制文件，便于部署
-- **跨平台** - 支持 Linux、macOS、Windows
+`lite-xmr` is a lightweight Monero CPU miner focused on a small Rust control plane, Stratum pool connectivity, and RandomX mining through native code.
 
-## 性能
+It is not a "pure Rust, no C/C++" project. The miner intentionally uses native dependencies where they are the practical choice:
 
-RandomX 实测算力受 CPU 架构、内存时序、线程绑定、是否启用大页等影响很大，不建议用固定机型表做“保底承诺”。
+- `randomx-rs` provides RandomX through C/C++ FFI.
+- `src/crypto/randomx/*` keeps the local RandomX headers needed for compatibility checks.
+- `src/3rdparty/rapidjson` is used by a small native bridge for tolerant Stratum JSON handling.
+- Windows TLS fallback uses vendored OpenSSL to match XMRig-style pool compatibility.
 
-以你提到的 Intel i7-12700ES 为例，约 `6k H/s` 属于常见区间（具体仍以本机实测为准）。
+## Current Scope
 
-建议用以下命令在你的环境直接压测：
+- Monero RandomX `rx/0`.
+- CPU mining only.
+- Stratum over TCP or TLS.
+- x86_64-focused CPU detection and thread planning.
+- Optional DNS fallback/DoH-style resolver path for unstable DNS environments.
+- Zero developer fee.
 
-```bash
-./lite-xmr --bench 30 -t 0
-```
+This is a focused miner, not a full XMRig replacement. OpenCL, CUDA, MSR tuning, huge-page privilege management, and multi-algorithm switching are outside the current scope.
 
-## 系统要求
+## TLS And xmrig-proxy
 
-- **CPU**: x86_64 处理器，支持 AES-NI 和 AVX2
-- **内存**: 最少 2GB (RandomX 算法需求)
-- **操作系统**: Linux / macOS / Windows
-- **Rust**: 1.75+
+Some private `xmrig-proxy` deployments are TLS-only. If you connect without TLS, the proxy can immediately close the socket with EOF.
 
-## 安装
-
-### 从源码编译
+Use `--tls` for those pools:
 
 ```bash
-# 克隆仓库
-git clone https://cnb.cool/rainchan/lite-xmr.git
-cd lite-xmr
-
-# 编译 release 版本
-cargo build --release
-
-# 二进制文件位于 target/release/lite-xmr
+lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET -p x --tls
 ```
 
-### 预编译版本
-
-前往 [Releases](https://cnb.cool/rainchan/lite-xmr/releases) 页面下载对应平台的预编译二进制文件。
-
-## 使用
-
-### 基础用法
+Connection-only test, with debug logs and no mining:
 
 ```bash
-./lite-xmr -o pool.supportxmr.com:3333 -u <YOUR_XMR_WALLET>
+lite-xmr -o 156.226.168.60:36807 -u x -p x --tls -k -V
 ```
 
-### 命令行参数
+On Windows, `lite-xmr` tries rustls first and then falls back to OpenSSL when a pool behaves like XMRig-compatible TLS endpoints. This is important for private proxies with self-signed certificates or non-browser-style TLS behavior.
 
-| 参数 | 描述 | 示例 |
-|------|------|------|
-| `-o, --url, --pool` | 矿池地址 | `-o pool.supportxmr.com:3333` |
-| `-u, --user` | 钱包地址或用户名 | `-u 4An3...7kQ9` |
-| `-p, --pass` | 矿池密码 (可选) | `-p x` |
-| `-t, --threads` | 挖矿线程数 (可选) | `-t 8` |
-| `--tls` | 启用 TLS 连接 (可选) | `--tls` |
-| `--doh` | 启用 DNS over HTTPS 解析矿池域名 | `--doh` |
-| `-V, --verbose` | 输出详细日志 (等价于 `--log-level debug`) | `-V` |
-| `-v, --version` | 显示版本信息 | `-v` |
-| `-h, --help` | 显示帮助信息 | `-h` |
+Security note: the current compatibility path accepts self-signed or otherwise untrusted pool certificates. Only connect to pools or proxies you trust.
 
-### 配置示例
+## Quick Start
 
 ```bash
-# 使用 8 线程连接到 SupportXMR 矿池
-./lite-xmr -o pool.supportxmr.com:3333 -u YOUR_WALLET -t 8
-
-# 使用 TLS 连接到矿池
-./lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls -t 8
-
-# 使用 DoH 解析矿池域名（适合本地 DNS 不稳定场景）
-./lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls --doh -t 8
-
-# 使用 TLS 连接到 IP:PORT 矿池
-./lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET --tls -t 8
+lite-xmr -o pool.supportxmr.com:3333 -u YOUR_WALLET
 ```
 
-### 启用 DoH（配置文件）
+With TLS:
 
-`config.toml` 示例：
+```bash
+lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls
+```
+
+With explicit threads:
+
+```bash
+lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls -t 8
+```
+
+Benchmark locally:
+
+```bash
+lite-xmr --bench 30
+```
+
+## Command Line
+
+| Option | Meaning |
+| --- | --- |
+| `-o, --url, --pool <HOST:PORT>` | Pool address. Schemes such as `stratum+tls://`, `tls://`, `ssl://`, and `https://` imply TLS. |
+| `-u, --user <ADDRESS>` | Wallet address or pool username. |
+| `-p, --pass <STRING>` | Pool password, defaulting to `x` when omitted. |
+| `-t, --threads <N>` | Mining threads. `0` means automatic thread planning. |
+| `--tls` | Force TLS for the pool connection. |
+| `--config <PATH>` | Load `config.toml` or `config.json`. |
+| `--log-level <LEVEL>` | Set log level, for example `info`, `debug`, or `warn`. |
+| `-V, --verbose` | Shortcut for `--log-level debug`. |
+| `-k, --keepalive` | Connect and keep the session alive without mining. Useful for proxy/TLS checks. |
+| `--doh` | Resolve the pool host through the built-in resolver path before connecting. |
+| `--use-e-cores` | Include E-cores in automatic thread planning on hybrid CPUs. |
+| `-B, --background` | Run in background mode. |
+| `--bench <SECONDS>` | Run local RandomX benchmark. |
+| `-v, --version` | Print version and exit. |
+| `-h, --help` | Print help and exit. |
+
+## Configuration File
+
+`lite-xmr` looks for `config.toml` or `config.json` in the current directory unless `--config` is provided.
+
+Minimal `config.toml`:
+
+```toml
+[pool]
+url = "pool.supportxmr.com:443"
+user = "YOUR_WALLET"
+pass = "x"
+tls = true
+```
+
+Private TLS proxy test:
+
+```toml
+[pool]
+url = "156.226.168.60:36807"
+user = "x"
+pass = "x"
+tls = true
+keepalive = true
+
+[logging]
+level = "debug"
+```
+
+CPU and resolver options:
 
 ```toml
 [pool]
@@ -108,102 +134,149 @@ url = "pool.supportxmr.com:443"
 user = "YOUR_WALLET"
 tls = true
 doh = true
+
+use_e_cores = false
+
+[cpu]
+threads = 8
 ```
 
-## 支持的矿池
+## Build From Source
 
-- [SupportXMR](https://supportxmr.com/)
-- [Monero Ocean](https://moneroocean.stream/)
-- [Nanopool](https://xmr.nanopool.org/)
-- [MineXMR](https://minexmr.com/)
-
-## 工作原理
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Wallet    │────▶│   Pool      │────▶│   Worker    │
-│   (You)     │◀────│  Stratum    │◀────│  (lite-xmr) │
-└─────────────┘     └─────────────┘     └─────────────┘
-     │                                        │
-     │  1. Connect & Subscribe                │
-     │  2. Receive Jobs ──────────────────────▶│
-     │                                        │
-     │  3. Submit Share ◀──────────────────────│
-     │  (Proof of Work)                       │
-     └────────────────────────────────────────┘
-```
-
-lite-xmr 通过 Stratum 协议与矿池通信，接收挖矿任务并使用 RandomX 算法执行工作量证明。
-
-## 故障排除
-
-### 常见问题
-
-**Q: 提示 "CPU not supported"**
-> 你的 CPU 可能不支持 RandomX 所需指令集 (AES-NI, AVX2)。RandomX 主要面向现代 x86_64 处理器。
-
-**Q: 算力很低**
-> 尝试增加线程数，确保使用 release 模式编译，并检查是否启用了 LTO。
-
-**Q: 连接失败**
-> 检查矿池地址和端口是否正确，确认网络连接正常，尝试添加 `-v` 参数查看详细日志。
-
-**Q: Windows 报错缺少 DLL**
-> 使用静态编译版本或安装 Visual C++ Redistributable。
-
-### 调试
-
-启用详细日志模式：
+Clone from GitHub:
 
 ```bash
-./lite-xmr -o pool.supportxmr.com:3333 -u YOUR_WALLET -v
+git clone https://github.com/koharachan/lite-xmr.git
+cd lite-xmr
+cargo build --release
 ```
 
-## 开发
+The binary is written to:
 
-### 项目结构
-
+```text
+target/release/lite-xmr
 ```
+
+### Toolchain Requirements
+
+- Rust 1.85 or newer for edition 2024 support.
+- C and C++ build tools for `randomx-rs`.
+- CMake for native RandomX builds.
+- Perl for vendored OpenSSL builds.
+- NASM is recommended on Windows for faster OpenSSL assembly builds.
+
+### Windows Notes
+
+Use an MSVC developer shell, for example "x64 Native Tools Command Prompt" or a terminal initialized through `vcvars64.bat`.
+
+Example:
+
+```cmd
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
+cargo build --release
+```
+
+If OpenSSL vendored build fails, install Perl such as Strawberry Perl and make sure it is in `PATH`.
+
+### Linux Notes
+
+Install a normal native build stack before running Cargo:
+
+```bash
+sudo apt install build-essential cmake pkg-config perl nasm
+cargo build --release
+```
+
+### macOS Notes
+
+Install the Xcode command-line tools:
+
+```bash
+xcode-select --install
+cargo build --release
+```
+
+## Project Layout
+
+```text
 src/
-├── main.rs           # 程序入口
-├── config.rs         # 配置解析
-├── cpu.rs            # CPU 检测
-├── job.rs            # Stratum 任务处理
-├── stats.rs          # 算力统计
-├── error.rs          # 错误类型
-├── miner/            # 挖矿核心
-│   ├── mod.rs
-│   └── worker.rs     # RandomX worker
-└── stratum/          # Stratum 协议
-    ├── mod.rs
-    ├── client.rs     # Stratum 客户端
-    └── transport.rs  # TCP/TLS 传输
+├── app/                 CLI entry, logging, benchmark, daemon helpers
+├── bridge/              C++ native bridge for RapidJSON and header checks
+├── crypto/randomx/      RandomX headers kept for compatibility validation
+├── 3rdparty/rapidjson/  RapidJSON headers used by the native bridge
+├── randomx/             Rust wrapper logic around RandomX state
+├── stratum/             Stratum client and TCP/TLS transport
+├── config.rs            CLI and config-file parsing
+├── controller.rs        miner orchestration
+├── cpu.rs               CPU detection and thread planning
+├── job.rs               pool job parsing
+├── miner.rs             mining workers and benchmark path
+└── stats.rs             hashrate and share counters
 ```
 
-### 构建优化
+## Dependency Policy
 
-项目已配置以下 release 优化：
+The repository intentionally keeps only native code that is currently used.
 
-- `lto = true` - 链接时优化
-- `opt-level = 3` - 最高优化级别
-- `codegen-units = 1` - 单一代码生成单元
-- `strip = true` - 剥离调试符号
+Kept:
 
-## 性能优化建议
+- `src/3rdparty/rapidjson`
+- `src/crypto/randomx/randomx.h`
+- `src/crypto/randomx/configuration.h`
+- `src/crypto/randomx/intrin_portable.h`
+- `src/crypto/randomx/blake2/endian.h`
 
-1. **关闭超线程** - 在 BIOS 中禁用 CPU 超线程可提升约 10% 算力
-2. **使用 fast memory** - RandomX 对内存带宽敏感
-3. **NUMA 亲和性** - 多路服务器上使用 `hwloc` 绑定 CPU
-4. **编译优化** - 确保使用 `--release` 模式
+Removed:
 
-## 贡献
+- unused `getopt`
+- unused `argon2`
+- unused `base32`
+- unused XMRig-side source trees not called by this Rust binary
 
-欢迎提交 Issue 和 Pull Request！
+## Troubleshooting
 
-## 许可证
+### Pool closes with EOF
 
-本项目采用 [GPL-3.0](LICENSE) 许可证开源。
+Try TLS:
 
-## 免责声明
+```bash
+lite-xmr -o HOST:PORT -u YOUR_WALLET --tls -V
+```
 
-本软件仅供学习交流使用，请遵守当地法律法规。挖矿行为可能涉及较高的电力消耗和硬件磨损。
+For TLS-only `xmrig-proxy`, plain TCP is expected to fail.
+
+### `-V` does not print version
+
+That is intentional. `-V` means verbose/debug logs. Use `-v` or `--version` for the version.
+
+### Low hashrate
+
+RandomX performance depends heavily on CPU cache, memory timings, huge pages, thread count, and whether the process is pinned to good cores. Start with:
+
+```bash
+lite-xmr --bench 30
+```
+
+Then try explicit thread counts:
+
+```bash
+lite-xmr --bench 30 -t 4
+lite-xmr --bench 30 -t 8
+lite-xmr --bench 30 -t 12 --use-e-cores
+```
+
+### Windows build cannot find MSVC tools
+
+Build from an MSVC developer shell or initialize the environment with `vcvars64.bat`.
+
+### OpenSSL build fails on Windows
+
+Install Perl and ensure `perl.exe` is available in `PATH`. NASM is also recommended.
+
+## License
+
+This project is licensed under [GPL-3.0](LICENSE).
+
+## Disclaimer
+
+This software is provided for learning, experimentation, and legitimate mining use. Mining consumes power, generates heat, and can wear hardware. Follow local laws and only connect to pools or proxies you trust.

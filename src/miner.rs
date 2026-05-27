@@ -116,9 +116,7 @@ impl RxDatasetCache {
     }
 }
 
-fn build_full_dataset(
-    seed_bytes: &[u8],
-) -> anyhow::Result<Arc<randomx::Dataset>> {
+fn build_full_dataset(seed_bytes: &[u8]) -> anyhow::Result<Arc<randomx::Dataset>> {
     randomx::Dataset::new(seed_bytes)
 }
 
@@ -346,7 +344,11 @@ fn mine_one_batch(
     }
 }
 
-pub fn run_benchmark(thread_count: u32, seconds: u64, pu_plan: Option<&[usize]>) -> anyhow::Result<u64> {
+pub fn run_benchmark(
+    thread_count: u32,
+    seconds: u64,
+    pu_plan: Option<&[usize]>,
+) -> anyhow::Result<u64> {
     let thread_count = thread_count.max(1);
     let seconds = seconds.max(1);
     let seed_bytes = [0u8; 32];

@@ -6,6 +6,7 @@ mod doh;
 mod error;
 mod job;
 mod miner;
+mod native_bridge;
 mod randomx;
 mod stats;
 mod stratum;

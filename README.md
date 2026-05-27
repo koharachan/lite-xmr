@@ -2,13 +2,13 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.1.0-blue)
 ![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 **轻量级、高性能 Monero (XMR) CPU 挖矿工具**
 
-Rust + C/C++ 实现，无第三方 C/C++ 依赖，无需手动下载依赖，静态编译，开箱即用。
+Rust + C/C++ 混合实现（RandomX 依赖 C/C++），无需手动下载依赖，静态编译，开箱即用。
 
 </div>
 
@@ -16,7 +16,7 @@ Rust + C/C++ 实现，无第三方 C/C++ 依赖，无需手动下载依赖，静
 
 ## 特性
 
-- **Pure Rust** - 100% Rust 实现，无任何 C/C++ FFI 依赖
+- **Rust 主体实现** - 挖矿核心通过 RandomX C/C++ 库（FFI）调用，连接控制与调度逻辑为 Rust
 - **轻量高效** - 专为 x86_64 架构优化，内存占用低
 - **零抽水** - 开源透明，无开发者的秘密捐赠算力
 - **静态编译** - 单二进制文件，便于部署
@@ -72,16 +72,14 @@ cargo build --release
 
 | 参数 | 描述 | 示例 |
 |------|------|------|
-| `-o, --pool` | 矿池地址 | `-o pool.supportxmr.com:3333` |
+| `-o, --url, --pool` | 矿池地址 | `-o pool.supportxmr.com:3333` |
 | `-u, --user` | 钱包地址或用户名 | `-u 4An3...7kQ9` |
 | `-p, --pass` | 矿池密码 (可选) | `-p x` |
 | `-t, --threads` | 挖矿线程数 (可选) | `-t 8` |
-| `-r, --retries` | 连接重试次数 (可选) | `-r 5` |
-| `-R, --retry-pause` | 重试间隔秒数 (可选) | `-R 10` |
 | `--tls` | 启用 TLS 连接 (可选) | `--tls` |
 | `--doh` | 启用 DNS over HTTPS 解析矿池域名 | `--doh` |
-| `-v, --verbose` | 输出详细日志 | `-v` |
-| `-V, --version` | 显示版本信息 | `-V` |
+| `-V, --verbose` | 输出详细日志 (等价于 `--log-level debug`) | `-V` |
+| `-v, --version` | 显示版本信息 | `-v` |
 | `-h, --help` | 显示帮助信息 | `-h` |
 
 ### 配置示例
@@ -96,8 +94,8 @@ cargo build --release
 # 使用 DoH 解析矿池域名（适合本地 DNS 不稳定场景）
 ./lite-xmr -o pool.supportxmr.com:443 -u YOUR_WALLET --tls --doh -t 8
 
-# 自定义重试参数
-./lite-xmr -o pool.supportxmr.com:3333 -u YOUR_WALLET -r 10 -R 30 -t 16
+# 使用 TLS 连接到 IP:PORT 矿池
+./lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET --tls -t 8
 ```
 
 ### 启用 DoH（配置文件）

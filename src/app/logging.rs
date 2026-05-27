@@ -12,10 +12,7 @@ pub fn init(level: &str) {
     tracing_subscriber::fmt()
         .compact()
         .with_timer(LocalLogTime)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| level.parse().unwrap()),
-        )
+        .with_env_filter(level.parse::<tracing_subscriber::EnvFilter>().unwrap())
         .with_target(false)
         .with_thread_ids(false)
         .with_file(false)

@@ -2,11 +2,14 @@ use std::ffi::c_void;
 use std::os::raw::{c_uint, c_ulong};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
+use tracing::debug;
 
 const FLAG_FULL_MEM: u32 = 0x04;
 const FLAG_LARGE_PAGES: u32 = 0x01;
 pub const HASH_SIZE: usize = 32;
+static RANDOMX_HEADER_LOGGED: OnceLock<()> = OnceLock::new();
 
 #[repr(C)]
 struct RandomXCache {
@@ -61,6 +64,27 @@ pub fn recommended_flags() -> u32 {
     unsafe { randomx_get_flags() as u32 }
 }
 
+fn ensure_header_compat() -> anyhow::Result<()> {
+    let c_hash_size = crate::native_bridge::randomx_hash_size();
+    if c_hash_size != HASH_SIZE {
+        anyhow::bail!(
+            "RandomX hash size mismatch: Rust={} C-header={}",
+            HASH_SIZE,
+            c_hash_size
+        );
+    }
+
+    RANDOMX_HEADER_LOGGED.get_or_init(|| {
+        debug!(
+            "RandomX header check ok: hash_size={} dataset_max={}",
+            c_hash_size,
+            crate::native_bridge::randomx_dataset_max_size()
+        );
+    });
+
+    Ok(())
+}
+
 pub struct Dataset {
     ptr: NonNull<RandomXDataset>,
 }
@@ -70,6 +94,8 @@ unsafe impl Sync for Dataset {}
 
 impl Dataset {
     pub fn new(seed: &[u8]) -> anyhow::Result<Arc<Self>> {
+        ensure_header_compat()?;
+
         if seed.is_empty() {
             anyhow::bail!("RandomX seed is empty");
         }

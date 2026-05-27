@@ -118,7 +118,7 @@ impl StratumClient {
                 .next_line()
                 .await?
                 .ok_or(Error::Stratum("pool closed during login".into()))?;
-            let msg: serde_json::Value = serde_json::from_str(&line)?;
+            let msg: serde_json::Value = parse_json_line(&line)?;
             let mid = msg.get("id").and_then(|v| v.as_u64());
 
             if mid == Some(login_id) {
@@ -208,7 +208,7 @@ async fn mining_loop(
                         if line.is_empty() {
                             continue;
                         }
-                        let msg: serde_json::Value = match serde_json::from_str(&line) {
+                        let msg: serde_json::Value = match parse_json_line(&line) {
                             Ok(m) => m,
                             Err(e) => {
                                 warn!("JSON error: {} (line: {})", e, &line[..line.len().min(120)]);
@@ -252,7 +252,7 @@ async fn keepalive_loop(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        if let Ok(msg) = parse_json_line(line.trim()) {
                             debug!("keepalive: method={:?}", msg.get("method"));
                         }
                     }
@@ -376,4 +376,19 @@ fn format_json_error(err: &serde_json::Value) -> String {
         .and_then(|m| m.as_str())
         .unwrap_or("unknown")
         .to_string()
+}
+
+fn parse_json_line(line: &str) -> std::result::Result<serde_json::Value, serde_json::Error> {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(v) => Ok(v),
+        Err(primary) => {
+            if let Some(minified) = crate::native_bridge::rapidjson_minify(line) {
+                match serde_json::from_str::<serde_json::Value>(&minified) {
+                    Ok(v) => return Ok(v),
+                    Err(_) => {}
+                }
+            }
+            Err(primary)
+        }
+    }
 }

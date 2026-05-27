@@ -1,7 +1,7 @@
 use raw_cpuid::CpuId;
+use std::collections::BTreeSet;
 use sysinfo::System;
 use tracing::{info, warn};
-use std::collections::BTreeSet;
 
 pub fn os_name() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -212,17 +212,17 @@ fn build_thread_plan() -> ThreadPlan {
         e.clear();
     }
 
-    info!(
-        "* TOPOLOGY     P-core PUs: {:?} E-core PUs: {:?}",
-        p, e
-    );
+    info!("* TOPOLOGY     P-core PUs: {:?} E-core PUs: {:?}", p, e);
     ThreadPlan {
         p_core_pus: p,
         e_core_pus: e,
     }
 }
 
-fn one_pu_per_core(topo: &hwlocality::Topology, cpuset: &hwlocality::cpu::cpuset::CpuSet) -> Vec<usize> {
+fn one_pu_per_core(
+    topo: &hwlocality::Topology,
+    cpuset: &hwlocality::cpu::cpuset::CpuSet,
+) -> Vec<usize> {
     use hwlocality::object::types::ObjectType;
 
     let mut seen_cores = BTreeSet::new();

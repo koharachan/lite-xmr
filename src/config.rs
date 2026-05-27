@@ -26,6 +26,7 @@ pub struct Args {
     pub background: bool,
     pub bench_seconds: Option<u64>,
     pub use_e_cores: bool,
+    pub verbose: bool,
 }
 
 impl Args {
@@ -41,8 +42,12 @@ impl Args {
             return Ok(Err(EarlyExit::Version));
         }
 
+        let url = pargs
+            .opt_value_from_str(["-o", "--url"])?
+            .or(pargs.opt_value_from_str("--pool")?);
+
         let args = Args {
-            url: pargs.opt_value_from_str(["-o", "--url"])?,
+            url,
             user: pargs.opt_value_from_str(["-u", "--user"])?,
             pass: pargs.opt_value_from_str(["-p", "--pass"])?,
             threads: pargs.opt_value_from_str(["-t", "--threads"])?,
@@ -55,11 +60,12 @@ impl Args {
             background: pargs.contains(["-B", "--background"]),
             bench_seconds: pargs.opt_value_from_str("--bench")?,
             use_e_cores: pargs.contains("--use-e-cores"),
+            verbose: pargs.contains(["-V", "--verbose"]),
         };
 
         let remaining = pargs.finish();
         if !remaining.is_empty() {
-            anyhow::bail!("未知参数: {:?}", remaining);
+            anyhow::bail!("unknown arguments: {:?}", remaining);
         }
 
         Ok(Ok(args))
@@ -67,24 +73,25 @@ impl Args {
 }
 
 fn print_usage() {
-    println!("lite-xmr v{} - 轻量级 Monero (XMR) CPU 矿工", APP_VERSION);
+    println!("lite-xmr v{} - Monero (XMR) CPU miner", APP_VERSION);
     println!();
-    println!("用法: lite-xmr [选项]");
+    println!("Usage: lite-xmr [OPTIONS]");
     println!();
-    println!("选项:");
-    println!("  -o, --url <HOST:PORT>    矿池地址");
-    println!("  -u, --user <ADDRESS>     钱包地址或用户名");
-    println!("  -p, --pass <STRING>      矿池密码 (默认: x)");
-    println!("  -t, --threads <N>        挖矿线程数 (0 = 自动检测)");
-    println!("      --tls                使用 TLS 连接矿池");
-    println!("      --config <PATH>      配置文件路径 (支持 .json/.toml)");
-    println!("      --log-level <LEVEL>  日志级别 (默认: info)");
-    println!("      --api-bind <ADDR>    HTTP API 监听地址");
-    println!("  -k, --keepalive          保持连接活跃 (不挖矿)");
-    println!("      --doh                使用 DNS over HTTPS 解析矿池地址");
-    println!("  -B, --background         后台运行 (守护进程模式)");
-    println!("  -h, --help               显示帮助信息");
-    println!("  -v, --version            显示版本号");
+    println!("Options:");
+    println!("  -o, --url, --pool <HOST:PORT>  Pool address");
+    println!("  -u, --user <ADDRESS>            Wallet address or username");
+    println!("  -p, --pass <STRING>             Pool password (default: x)");
+    println!("  -t, --threads <N>               Mining threads (0 = auto)");
+    println!("      --tls                       Use TLS for pool connection");
+    println!("      --config <PATH>             Config file (.json/.toml)");
+    println!("      --log-level <LEVEL>         Log level (default: info)");
+    println!("  -V, --verbose                   Shortcut for --log-level debug");
+    println!("      --api-bind <ADDR>           HTTP API bind address");
+    println!("  -k, --keepalive                 Keep connection alive (no mining)");
+    println!("      --doh                       Resolve pool host via DoH");
+    println!("  -B, --background                Run in background mode");
+    println!("  -h, --help                      Show this help");
+    println!("  -v, --version                   Show version");
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -231,10 +238,11 @@ impl Config {
         let logging = file_cfg.as_ref().and_then(|c| c.logging.as_ref());
 
         let pool_url = first_non_empty(args.url.clone(), pool.map(|p| p.url.clone()))
-            .ok_or_else(|| anyhow::anyhow!("未指定矿池地址，请使用 -o/--url 或配置文件"))?;
+            .ok_or_else(|| anyhow::anyhow!("missing pool url, use -o/--url/--pool or config"))?;
+        let inferred_tls = url_implies_tls(&pool_url);
 
         let pool_user = first_non_empty(args.user.clone(), pool.map(|p| p.user.clone()))
-            .ok_or_else(|| anyhow::anyhow!("未指定钱包地址，请使用 -u/--user 或配置文件"))?;
+            .ok_or_else(|| anyhow::anyhow!("missing pool user, use -u/--user or config"))?;
 
         let pool_pass = args
             .pass
@@ -242,11 +250,15 @@ impl Config {
             .or_else(|| pool.map(|p| p.pass.clone()))
             .unwrap_or_else(|| "x".to_string());
 
-        let log_level = args
-            .log_level
-            .clone()
-            .or_else(|| logging.map(|l| l.level.clone()))
-            .unwrap_or_else(|| "info".to_string());
+        let log_level = if let Some(level) = args.log_level.clone() {
+            level
+        } else if args.verbose {
+            "debug".to_string()
+        } else {
+            logging
+                .map(|l| l.level.clone())
+                .unwrap_or_else(|| "info".to_string())
+        };
 
         let threads = args
             .threads
@@ -263,7 +275,7 @@ impl Config {
             pool_url,
             pool_user,
             pool_pass,
-            pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false),
+            pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false) || inferred_tls,
             threads,
             log_level,
             api_bind: args.api_bind.or_else(|| api.and_then(|a| a.bind)),
@@ -277,4 +289,13 @@ impl Config {
                     .unwrap_or(false),
         })
     }
+}
+
+fn url_implies_tls(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("stratum+ssl://")
+        || lower.starts_with("stratum+tls://")
+        || lower.starts_with("ssl://")
+        || lower.starts_with("tls://")
+        || lower.starts_with("https://")
 }

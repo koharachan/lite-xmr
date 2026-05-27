@@ -7,3 +7,6 @@ target/
 lite-xmr
 lite-xmr.exe
 .venv-coding-tools/
+
+# Local official release bundles, generated after commits.
+official-release/

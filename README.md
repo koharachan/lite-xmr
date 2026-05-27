@@ -87,6 +87,8 @@ lite-xmr --bench 30
 | `-p, --pass <STRING>` | Pool password, defaulting to `x` when omitted. |
 | `-t, --threads <N>` | Mining threads. `0` means automatic thread planning. |
 | `--tls` | Force TLS for the pool connection. |
+| `-ua, --ua <MODE>` | Select the Stratum login User-Agent preset. |
+| `--http2` | Add `http2: true` to the Stratum login params. |
 | `--config <PATH>` | Load `config.toml` or `config.json`. |
 | `--log-level <LEVEL>` | Set log level, for example `info`, `debug`, or `warn`. |
 | `-V, --verbose` | Shortcut for `--log-level debug`. |
@@ -97,6 +99,30 @@ lite-xmr --bench 30
 | `--bench <SECONDS>` | Run local RandomX benchmark. |
 | `-v, --version` | Print version and exit. |
 | `-h, --help` | Print help and exit. |
+
+## User-Agent Presets
+
+`-ua` changes the `params.agent` value sent in the Stratum `login` request.
+
+| Mode | User-Agent |
+| --- | --- |
+| default | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64)` |
+| edge | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0` |
+| full | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.1.0 rust/2022` |
+| xmrig | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022` |
+| fast | `lite-xmr/1.1.0 rust/2022` |
+| short | `lite-xmr/1.1.0` |
+| sogo | `Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.221 Safari/537.36 SE 2.X MetaSr 1.0` |
+| ie11 | `Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko` |
+
+Examples:
+
+```bash
+lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET --tls -ua xmrig
+lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET --tls -ua edge --http2
+```
+
+`--http2` is an advertised pool/proxy capability flag in the login params. It does not turn Stratum TCP into an HTTP/2 transport by itself; use it only with proxies that understand that flag.
 
 ## Configuration File
 
@@ -121,6 +147,8 @@ user = "x"
 pass = "x"
 tls = true
 keepalive = true
+ua = "xmrig"
+http2 = true
 
 [logging]
 level = "debug"
@@ -129,13 +157,13 @@ level = "debug"
 CPU and resolver options:
 
 ```toml
+use_e_cores = false
+
 [pool]
 url = "pool.supportxmr.com:443"
 user = "YOUR_WALLET"
 tls = true
 doh = true
-
-use_e_cores = false
 
 [cpu]
 threads = 8

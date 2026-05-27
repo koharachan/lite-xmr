@@ -18,6 +18,8 @@ pub struct Args {
     pub pass: Option<String>,
     pub threads: Option<u32>,
     pub tls: bool,
+    pub user_agent: Option<String>,
+    pub http2: bool,
     pub config: Option<PathBuf>,
     pub log_level: Option<String>,
     pub api_bind: Option<SocketAddr>,
@@ -45,6 +47,9 @@ impl Args {
         let url = pargs
             .opt_value_from_str(["-o", "--url"])?
             .or(pargs.opt_value_from_str("--pool")?);
+        let user_agent = pargs
+            .opt_value_from_str("-ua")?
+            .or(pargs.opt_value_from_str("--ua")?);
 
         let args = Args {
             url,
@@ -52,6 +57,8 @@ impl Args {
             pass: pargs.opt_value_from_str(["-p", "--pass"])?,
             threads: pargs.opt_value_from_str(["-t", "--threads"])?,
             tls: pargs.contains(["-tls", "--tls"]),
+            user_agent,
+            http2: pargs.contains("--http2"),
             config: pargs.opt_value_from_str("--config")?,
             log_level: pargs.opt_value_from_str("--log-level")?,
             api_bind: pargs.opt_value_from_str("--api-bind")?,
@@ -83,6 +90,10 @@ fn print_usage() {
     println!("  -p, --pass <STRING>             Pool password (default: x)");
     println!("  -t, --threads <N>               Mining threads (0 = auto)");
     println!("      --tls                       Use TLS for pool connection");
+    println!(
+        "  -ua, --ua <MODE>                User-Agent preset: default, edge, full, xmrig, fast, short, sogo, ie11"
+    );
+    println!("      --http2                     Advertise HTTP/2 support in login params");
     println!("      --config <PATH>             Config file (.json/.toml)");
     println!("      --log-level <LEVEL>         Log level (default: info)");
     println!("  -V, --verbose                   Shortcut for --log-level debug");
@@ -102,6 +113,10 @@ pub struct PoolConfig {
     pub pass: String,
     #[serde(default)]
     pub tls: bool,
+    #[serde(default, alias = "user-agent", alias = "user_agent")]
+    pub ua: Option<String>,
+    #[serde(default)]
+    pub http2: bool,
     #[serde(default)]
     pub keepalive: bool,
     #[serde(default)]
@@ -175,6 +190,8 @@ pub struct Config {
     pub pool_user: String,
     pub pool_pass: String,
     pub pool_tls: bool,
+    pub user_agent: String,
+    pub http2: bool,
     pub threads: u32,
     pub log_level: String,
     pub api_bind: Option<SocketAddr>,
@@ -276,6 +293,12 @@ impl Config {
             pool_user,
             pool_pass,
             pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false) || inferred_tls,
+            user_agent: resolve_user_agent(
+                args.user_agent
+                    .clone()
+                    .or_else(|| pool.and_then(|p| p.ua.clone())),
+            )?,
+            http2: args.http2 || pool.map(|p| p.http2).unwrap_or(false),
             threads,
             log_level,
             api_bind: args.api_bind.or_else(|| api.and_then(|a| a.bind)),
@@ -298,4 +321,34 @@ fn url_implies_tls(url: &str) -> bool {
         || lower.starts_with("ssl://")
         || lower.starts_with("tls://")
         || lower.starts_with("https://")
+}
+
+fn resolve_user_agent(mode: Option<String>) -> anyhow::Result<String> {
+    let mode = mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default")
+        .to_ascii_lowercase();
+
+    let lite = format!("lite-xmr/{} rust/2022", APP_VERSION);
+    let value = match mode.as_str() {
+        "default" => "XMRig/6.26.0 (Windows NT 10.0; Win64; x64)".to_string(),
+        "edge" => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0".to_string(),
+        "full" => format!(
+            "XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 {}",
+            lite
+        ),
+        "xmrig" => "XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022".to_string(),
+        "fast" => lite,
+        "short" => format!("lite-xmr/{}", APP_VERSION),
+        "sogo" => "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.221 Safari/537.36 SE 2.X MetaSr 1.0".to_string(),
+        "ie11" => "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko".to_string(),
+        _ => anyhow::bail!(
+            "unknown -ua mode '{}'; supported: default, edge, full, xmrig, fast, short, sogo, ie11",
+            mode
+        ),
+    };
+
+    Ok(value)
 }

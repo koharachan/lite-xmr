@@ -112,6 +112,8 @@ impl Controller {
             config.pool_user.clone(),
             config.pool_pass.clone(),
             config.pool_tls,
+            config.user_agent.clone(),
+            config.http2,
         );
 
         let keepalive = config.keepalive;

@@ -10,9 +10,6 @@ use crate::job::Job;
 
 use super::transport::StratumTransport;
 
-pub const APP_USER_AGENT: &str =
-    "XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022";
-
 const SUPPORTED_ALGOS: &[&str] = &["rx/0"];
 
 #[derive(Debug, Clone)]
@@ -29,17 +26,28 @@ pub struct StratumClient {
     user: String,
     pass: String,
     use_tls: bool,
+    user_agent: String,
+    http2: bool,
     running: Arc<AtomicBool>,
     request_id: AtomicU64,
 }
 
 impl StratumClient {
-    pub fn new(url: String, user: String, pass: String, use_tls: bool) -> Self {
+    pub fn new(
+        url: String,
+        user: String,
+        pass: String,
+        use_tls: bool,
+        user_agent: String,
+        http2: bool,
+    ) -> Self {
         StratumClient {
             url,
             user,
             pass,
             use_tls,
+            user_agent,
+            http2,
             running: Arc::new(AtomicBool::new(false)),
             request_id: AtomicU64::new(1),
         }
@@ -108,10 +116,19 @@ impl StratumClient {
         let mut lines = BufReader::new(reader).lines();
 
         let login_id = self.next_id();
-        let login_msg = build_login(&self.user, &self.pass, login_id);
+        let login_msg = build_login(
+            &self.user,
+            &self.pass,
+            &self.user_agent,
+            self.http2,
+            login_id,
+        );
         writer.write_all(login_msg.as_bytes()).await?;
         writer.flush().await?;
-        debug!("login: id={}", login_id);
+        debug!(
+            "login: id={} agent={:?} http2={}",
+            login_id, self.user_agent, self.http2
+        );
 
         loop {
             let line = lines
@@ -315,21 +332,26 @@ async fn handle_msg(
     Ok(())
 }
 
-fn build_login(user: &str, pass: &str, id: u64) -> String {
-    let mut s = format!(
-        "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{{\"login\":\"{}\",\"pass\":\"{}\",\"agent\":\"{}\",\"algo\":[",
-        id, user, pass, APP_USER_AGENT
-    );
-    for (i, algo) in SUPPORTED_ALGOS.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push('"');
-        s.push_str(algo);
-        s.push('"');
+fn build_login(user: &str, pass: &str, user_agent: &str, http2: bool, id: u64) -> String {
+    let mut params = serde_json::json!({
+        "login": user,
+        "pass": pass,
+        "agent": user_agent,
+        "algo": SUPPORTED_ALGOS,
+    });
+
+    if http2 {
+        params["http2"] = serde_json::Value::Bool(true);
     }
-    s.push_str("]}}\n");
-    s
+
+    let msg = serde_json::json!({
+        "id": id,
+        "jsonrpc": "2.0",
+        "method": "login",
+        "params": params,
+    });
+
+    format!("{}\n", msg)
 }
 
 fn build_submit(session_id: &str, job_id: &str, nonce: &str, result: &str, id: u64) -> String {

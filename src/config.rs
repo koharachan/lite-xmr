@@ -1,5 +1,6 @@
 use pico_args::Arguments;
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -36,7 +37,7 @@ pub struct Args {
 
 impl Args {
     pub fn parse() -> anyhow::Result<Result<Self, EarlyExit>> {
-        let mut pargs = Arguments::from_env();
+        let mut pargs = Arguments::from_vec(normalized_args_from_env());
 
         if pargs.contains("-h") || pargs.contains("--help") {
             print_usage();
@@ -50,16 +51,14 @@ impl Args {
         let url = pargs
             .opt_value_from_str(["-o", "--url"])?
             .or(pargs.opt_value_from_str("--pool")?);
-        let user_agent = pargs
-            .opt_value_from_str("-ua")?
-            .or(pargs.opt_value_from_str("--ua")?);
+        let user_agent = pargs.opt_value_from_str("--ua")?;
 
         let args = Args {
             url,
             user: pargs.opt_value_from_str(["-u", "--user"])?,
             pass: pargs.opt_value_from_str(["-p", "--pass"])?,
             threads: pargs.opt_value_from_str(["-t", "--threads"])?,
-            tls: pargs.contains(["-tls", "--tls"]),
+            tls: pargs.contains("--tls"),
             sni: pargs.opt_value_from_str("--sni")?,
             user_agent,
             http2: pargs.contains("--http2"),
@@ -83,6 +82,28 @@ impl Args {
 
         Ok(Ok(args))
     }
+}
+
+fn normalized_args_from_env() -> Vec<OsString> {
+    std::env::args_os()
+        .skip(1)
+        .map(normalize_legacy_arg)
+        .collect()
+}
+
+fn normalize_legacy_arg(arg: OsString) -> OsString {
+    if arg == "-tls" {
+        return "--tls".into();
+    }
+    if arg == "-ua" {
+        return "--ua".into();
+    }
+    if let Some(arg) = arg.to_str() {
+        if let Some(value) = arg.strip_prefix("-ua=") {
+            return format!("--ua={}", value).into();
+        }
+    }
+    arg
 }
 
 fn print_usage() {
@@ -409,5 +430,16 @@ mod tests {
         assert!(url_implies_ws("ws://proxy.example:80/ws"));
         assert!(url_implies_ws("wss://proxy.example:443/ws"));
         assert!(!url_implies_ws("stratum+tls://proxy.example:443"));
+    }
+
+    #[test]
+    fn normalizes_legacy_multi_char_short_args() {
+        assert_eq!(normalize_legacy_arg("-tls".into()), OsString::from("--tls"));
+        assert_eq!(normalize_legacy_arg("-ua".into()), OsString::from("--ua"));
+        assert_eq!(
+            normalize_legacy_arg("-ua=xmrig".into()),
+            OsString::from("--ua=xmrig")
+        );
+        assert_eq!(normalize_legacy_arg("-V".into()), OsString::from("-V"));
     }
 }

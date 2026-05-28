@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="icon.png" alt="lite-xmr icon" width="128">
+<img src="icon.png" alt="lite-xmr icon" width="512">
 
 ![Version](https://img.shields.io/badge/version-1.1.0-blue)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)

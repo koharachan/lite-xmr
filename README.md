@@ -59,7 +59,7 @@ On Windows, `lite-xmr` tries rustls first and then falls back to OpenSSL when a 
 If the TCP address and TLS virtual host need to differ, override the SNI server name:
 
 ```bash
-lite-xmr -o 203.0.113.10:443 -u YOUR_WALLET --tls --sni proxy.example.com
+lite-xmr -o x.x.x.x:443 -u YOUR_WALLET --tls --sni proxy.example.com
 ```
 
 Security note: the current compatibility path accepts self-signed or otherwise untrusted pool certificates. Only connect to pools or proxies you trust.

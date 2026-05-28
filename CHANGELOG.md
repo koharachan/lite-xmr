@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-05-28
 
 - Split the application entrypoint into `app` modules for logging, daemon mode, and benchmark startup.
 - Moved the direct RandomX FFI wrapper under `src/randomx/` to reduce top-level source clutter.
@@ -8,6 +8,9 @@
 - Added CPU topology based thread planning with optional E-core usage and benchmark thread sweeps.
 - Added flushing after stratum submit writes to reduce delayed share submission.
 - Added CNB release build workflow and ignored local MCP/tooling logs.
+- Added XMRig-style config compatibility, TLS SNI override, and OpenSSL TLS fallback for private proxy compatibility.
+- Fixed xmrig-proxy/NiceHash nonce handling by preserving proxy-reserved nonce bytes.
+- Tightened mining console output and made noisy TLS close errors easier to read.
 
 ## 0.1.1 - 2026-05-23
 

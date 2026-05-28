@@ -1,0 +1,12 @@
+target/
+*.log
+*.tmp
+*.bak
+
+# Local build artifact that may appear in repo root
+lite-xmr
+lite-xmr.exe
+.venv-coding-tools/
+
+# Local official release bundles, generated after commits.
+official-release/

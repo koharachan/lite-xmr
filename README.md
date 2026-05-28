@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="icon.png" alt="lite-xmr icon" width="128">
+
 ![Version](https://img.shields.io/badge/version-1.1.0-blue)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)

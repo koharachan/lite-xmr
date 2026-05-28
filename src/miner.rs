@@ -223,6 +223,9 @@ fn worker_loop_sync(
             current_job = latest;
             nonce = worker_id;
             if let Some(job) = &current_job {
+                if job.is_nicehash() {
+                    debug!("Worker #{} using NiceHash nonce mask", worker_id);
+                }
                 let template = job.blob_bytes();
                 for b in &mut blobs {
                     b.clear();
@@ -303,6 +306,7 @@ fn mine_one_batch(
     const BATCH_SIZE: u32 = 1024;
     const PIPELINE_SIZE: usize = 16;
     let nonce_offset = job::NONCE_OFFSET;
+    let nonce_mask = job.nonce_mask();
     let target_diff = job.difficulty();
     let mut remaining = BATCH_SIZE;
 
@@ -311,9 +315,15 @@ fn mine_one_batch(
         let mut nonces = [0u32; PIPELINE_SIZE];
 
         for i in 0..count {
-            nonces[i] = *nonce;
+            if *nonce > nonce_mask {
+                thread::sleep(Duration::from_millis(10));
+                return;
+            }
+
             if nonce_offset + 4 <= blobs[i].len() {
-                blobs[i][nonce_offset..nonce_offset + 4].copy_from_slice(&(*nonce).to_le_bytes());
+                if let Some(full_nonce) = job::write_nonce(&mut blobs[i], *nonce, nonce_mask) {
+                    nonces[i] = full_nonce;
+                }
             }
             *nonce = (*nonce).wrapping_add(thread_count);
         }

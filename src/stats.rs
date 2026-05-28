@@ -34,6 +34,11 @@ impl MiningStats {
         let now = Instant::now();
 
         let mut sample = self.last_sample.lock().unwrap();
+        if sample.1 == 0 {
+            *sample = (now, self.total_hashes.load(Ordering::Relaxed));
+            return;
+        }
+
         let elapsed = now.duration_since(sample.0).as_secs_f64();
         if elapsed >= 1.0 {
             let current = self.total_hashes.load(Ordering::Relaxed);

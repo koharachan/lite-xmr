@@ -249,7 +249,7 @@ async fn mining_loop(
                         info!("pool closed connection");
                         break;
                     }
-                    Err(e) => return Err(Error::Network(e.to_string())),
+                    Err(e) => return Err(network_read_error(e)),
                 }
             }
             Some((job_id, nonce, result)) = submit_rx.recv() => {
@@ -288,12 +288,25 @@ async fn keepalive_loop(
                         info!("pool closed");
                         break;
                     }
-                    Err(e) => return Err(Error::Network(e.to_string())),
+                    Err(e) => return Err(network_read_error(e)),
                 }
             }
         }
     }
     Ok(())
+}
+
+fn network_read_error(e: std::io::Error) -> Error {
+    let msg = e.to_string();
+    if is_noisy_tls_close(&msg) {
+        Error::Network("TLS stream closed by pool".into())
+    } else {
+        Error::Network(msg)
+    }
+}
+
+fn is_noisy_tls_close(msg: &str) -> bool {
+    msg.contains("decryption failed or bad record mac") || msg.contains("record layer failure")
 }
 
 async fn handle_msg(

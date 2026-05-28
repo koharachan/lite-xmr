@@ -146,14 +146,7 @@ impl Controller {
                     continue;
                 }
                 info!(
-                    "speed {}/{} accepted/{} rejected/{}s",
-                    stats_clone.format_hashrate(),
-                    stats_clone.accepted(),
-                    stats_clone.rejected(),
-                    stats_clone.uptime_secs(),
-                );
-                println!(
-                    "speed {}/{} accepted/{} rejected/{}s",
+                    "speed {} {} accepted {} rejected {}s",
                     stats_clone.format_hashrate(),
                     stats_clone.accepted(),
                     stats_clone.rejected(),
@@ -183,13 +176,11 @@ impl Controller {
                         }
                         StratumEvent::Accepted => {
                             stats.record_accepted();
-                            info!("accepted");
-                            println!("accepted");
+                            debug!("accepted +1");
                         }
                         StratumEvent::Rejected(reason) => {
-                            warn!("rejected: {}", reason);
                             stats.record_rejected();
-                            println!("rejected: {}", reason);
+                            debug!("rejected +1: {}", reason);
                         }
                         StratumEvent::Connected => {
                             logged_in.store(true, Ordering::Release);

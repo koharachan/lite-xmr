@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 ///   major_version(1) + minor_version(1) + timestamp(8) + prev_id(32) + nonce(4) = 46
 ///   但实际模板中 nonce 起始于偏移 39（不含保留字段）。
 pub const NONCE_OFFSET: usize = 39;
+pub const NICEHASH_NONCE_MASK: u32 = 0x00ff_ffff;
 
 fn default_difficulty() -> u64 {
     1
@@ -24,6 +25,9 @@ pub struct Job {
 
     #[serde(skip, default = "default_difficulty")]
     difficulty: u64,
+
+    #[serde(skip)]
+    nicehash: bool,
 }
 
 #[derive(Debug)]
@@ -101,6 +105,8 @@ impl Job {
             }
         };
 
+        let nicehash = detects_nicehash_nonce(&blob_bytes);
+
         Some(Job {
             job_id,
             blob,
@@ -110,6 +116,7 @@ impl Job {
             seed_hash,
             blob_bytes,
             difficulty,
+            nicehash,
         })
     }
 
@@ -149,6 +156,8 @@ impl Job {
             }
         };
 
+        let nicehash = detects_nicehash_nonce(&blob_bytes);
+
         Some(Job {
             job_id,
             blob,
@@ -158,6 +167,7 @@ impl Job {
             seed_hash,
             blob_bytes,
             difficulty,
+            nicehash,
         })
     }
 
@@ -167,6 +177,18 @@ impl Job {
 
     pub fn difficulty(&self) -> u64 {
         self.difficulty
+    }
+
+    pub fn is_nicehash(&self) -> bool {
+        self.nicehash
+    }
+
+    pub fn nonce_mask(&self) -> u32 {
+        if self.nicehash {
+            NICEHASH_NONCE_MASK
+        } else {
+            u32::MAX
+        }
     }
 }
 
@@ -197,6 +219,27 @@ impl SubmitResult {
 /// target 为 0 时返回 u64::MAX。
 pub fn format_nonce(nonce: u32) -> String {
     hex::encode(nonce.to_le_bytes())
+}
+
+pub fn read_nonce(blob: &[u8]) -> Option<u32> {
+    if NONCE_OFFSET + 4 > blob.len() {
+        return None;
+    }
+
+    let mut nonce = [0u8; 4];
+    nonce.copy_from_slice(&blob[NONCE_OFFSET..NONCE_OFFSET + 4]);
+    Some(u32::from_le_bytes(nonce))
+}
+
+pub fn write_nonce(blob: &mut [u8], nonce: u32, mask: u32) -> Option<u32> {
+    let current = read_nonce(blob)?;
+    let merged = (current & !mask) | (nonce & mask);
+    blob[NONCE_OFFSET..NONCE_OFFSET + 4].copy_from_slice(&merged.to_le_bytes());
+    Some(merged)
+}
+
+fn detects_nicehash_nonce(blob: &[u8]) -> bool {
+    read_nonce(blob).is_some_and(|nonce| nonce != 0)
 }
 
 fn decode_target(target_hex: &str) -> Result<u64, String> {
@@ -246,5 +289,17 @@ mod tests {
     fn formats_nonce_in_blob_byte_order() {
         assert_eq!(format_nonce(1), "01000000");
         assert_eq!(format_nonce(0x1234_5678), "78563412");
+    }
+
+    #[test]
+    fn write_nonce_preserves_nicehash_reserved_byte() {
+        let mut blob = vec![0u8; NONCE_OFFSET + 4];
+        blob[NONCE_OFFSET..NONCE_OFFSET + 4].copy_from_slice(&0x1200_0000u32.to_le_bytes());
+
+        let merged = write_nonce(&mut blob, 0x00ab_cdef, NICEHASH_NONCE_MASK).unwrap();
+
+        assert_eq!(merged, 0x12ab_cdef);
+        assert_eq!(format_nonce(merged), "efcdab12");
+        assert_eq!(read_nonce(&blob), Some(0x12ab_cdef));
     }
 }

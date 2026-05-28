@@ -1,2 +1,5 @@
+[env]
+CMAKE_GENERATOR = "Ninja"
+
 [target.x86_64-pc-windows-gnu]
 rustflags = ["-C", "link-args=-lstdc++"]

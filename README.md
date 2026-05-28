@@ -141,6 +141,8 @@ The `http3://` and `h3://` URL schemes imply TLS and set the HTTP/3 capability f
 
 `lite-xmr` looks for `config.toml` or `config.json` in the current directory unless `--config` is provided.
 
+XMRig-style `config.json` files are accepted. `lite-xmr` reads the first enabled pool from `pools`, supports XMRig pool keys such as `url`, `user`, `pass`, `enabled`, `tls`, `sni`, and `keepalive`, and maps top-level `http`, `cpu`, `background`, `verbose`, and `user-agent` settings where they match lite-xmr features. XMRig-only GPU, RandomX tuning, daemon, proxy, and TLS certificate fields are ignored safely.
+
 Minimal `config.toml`:
 
 ```toml

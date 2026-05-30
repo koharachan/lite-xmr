@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0-alpha.2 - 2026-05-30
+
+- Extended the OpenSSL TLS fallback to Linux and other platforms, not only Windows.
+- Improved compatibility with pools that close rustls handshakes but accept XMRig/OpenSSL TLS clients.
+- Kept default IP pool TLS behavior aligned with XMRig by only sending SNI when explicitly configured.
+
 ## 1.2.0-alpha.1 - 2026-05-30
 
 - Added opt-in TLS 1.2 compatibility for older pools and TLS terminators.

@@ -1,6 +1,6 @@
 [package]
 name = "lite-xmr"
-version = "1.2.0-alpha.1"
+version = "1.2.0-alpha.2"
 edition = "2024"
 authors = ["lite-xmr contributors"]
 
@@ -29,13 +29,11 @@ libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sha2 = "0.10"
 rayon = "1"
+openssl = { version = "0.10", features = ["vendored"] }
+tokio-openssl = "0.6"
 
 [build-dependencies]
 cc = "1"
-
-[target.'cfg(windows)'.dependencies]
-openssl = { version = "0.10", features = ["vendored"] }
-tokio-openssl = "0.6"
 
 [[bin]]
 name = "lite-xmr"

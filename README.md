@@ -4,7 +4,7 @@
 
 <img src="icon.png" alt="lite-xmr icon" width="512">
 
-![Version](https://img.shields.io/badge/version-1.2.0--alpha.1-blue)
+![Version](https://img.shields.io/badge/version-1.2.0--alpha.2-blue)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
@@ -60,7 +60,7 @@ Connection-only test, with debug logs and no mining:
 lite-xmr -o HOST:PORT -u x -p x --tls -k -V
 ```
 
-On Windows, `lite-xmr` tries rustls first and then falls back to OpenSSL when a pool behaves like XMRig-compatible TLS endpoints. This is important for private proxies with self-signed certificates or non-browser-style TLS behavior.
+`lite-xmr` tries rustls first and then falls back to OpenSSL when a pool behaves like XMRig-compatible TLS endpoints. This is important for private proxies with self-signed certificates or non-browser-style TLS behavior.
 
 If the TCP address and TLS virtual host need to differ, override the SNI server name:
 
@@ -141,10 +141,10 @@ lite-xmr --bench 30
 | --- | --- |
 | default | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64)` |
 | edge | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0` |
-| full | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.2.0-alpha.1 rust/2022` |
+| full | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.2.0-alpha.2 rust/2022` |
 | xmrig | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022` |
-| fast | `lite-xmr/1.2.0-alpha.1 rust/2022` |
-| short | `lite-xmr/1.2.0-alpha.1` |
+| fast | `lite-xmr/1.2.0-alpha.2 rust/2022` |
+| short | `lite-xmr/1.2.0-alpha.2` |
 | sogo | `Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.221 Safari/537.36 SE 2.X MetaSr 1.0` |
 | ie11 | `Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko` |
 

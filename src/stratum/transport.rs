@@ -2,13 +2,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-#[cfg(windows)]
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-#[cfg(windows)]
 use tokio_openssl::SslStream as OpenSslTlsStream;
 use tokio_rustls::client::TlsStream as RustlsTlsStream;
 use tokio_rustls::{TlsConnector, rustls};
@@ -17,7 +15,6 @@ use tracing::{debug, info, warn};
 pub enum StratumTransport {
     Tcp(TcpStream),
     TlsRustls(RustlsTlsStream<TcpStream>),
-    #[cfg(windows)]
     TlsOpenSsl(OpenSslTlsStream<TcpStream>),
 }
 
@@ -54,38 +51,30 @@ impl StratumTransport {
                 Ok(StratumTransport::TlsRustls(tls_stream))
             }
             Err(rustls_err) => {
-                #[cfg(windows)]
-                {
-                    warn!(
-                        "rustls TLS handshake failed for {}: {}, retrying with OpenSSL",
-                        endpoint.connect_addr, rustls_err
-                    );
+                warn!(
+                    "rustls TLS handshake failed for {}: {}, retrying with OpenSSL",
+                    endpoint.connect_addr, rustls_err
+                );
 
-                    let stream = connect_tcp(&endpoint, socks5).await?;
-                    let tls_stream = connect_openssl(
-                        stream,
-                        &endpoint.tls_server_name,
-                        endpoint.sni_overridden,
-                        tls_allow_12,
-                        tls_fingerprint,
-                    )
-                    .await?;
-                    info!(
-                        "TLS connected via OpenSSL {} sni={}",
-                        endpoint.connect_addr,
-                        if endpoint.sni_overridden {
-                            endpoint.tls_server_name.as_str()
-                        } else {
-                            "<disabled>"
-                        }
-                    );
-                    Ok(StratumTransport::TlsOpenSsl(tls_stream))
-                }
-
-                #[cfg(not(windows))]
-                {
-                    Err(rustls_err)
-                }
+                let stream = connect_tcp(&endpoint, socks5).await?;
+                let tls_stream = connect_openssl(
+                    stream,
+                    &endpoint.tls_server_name,
+                    endpoint.sni_overridden,
+                    tls_allow_12,
+                    tls_fingerprint,
+                )
+                .await?;
+                info!(
+                    "TLS connected via OpenSSL {} sni={}",
+                    endpoint.connect_addr,
+                    if endpoint.sni_overridden {
+                        endpoint.tls_server_name.as_str()
+                    } else {
+                        "<disabled>"
+                    }
+                );
+                Ok(StratumTransport::TlsOpenSsl(tls_stream))
             }
         }
     }
@@ -100,7 +89,6 @@ impl AsyncRead for StratumTransport {
         match self.get_mut() {
             StratumTransport::Tcp(r) => Pin::new(r).poll_read(cx, buf),
             StratumTransport::TlsRustls(r) => Pin::new(r).poll_read(cx, buf),
-            #[cfg(windows)]
             StratumTransport::TlsOpenSsl(r) => Pin::new(r).poll_read(cx, buf),
         }
     }
@@ -115,7 +103,6 @@ impl AsyncWrite for StratumTransport {
         match self.get_mut() {
             StratumTransport::Tcp(r) => Pin::new(r).poll_write(cx, buf),
             StratumTransport::TlsRustls(r) => Pin::new(r).poll_write(cx, buf),
-            #[cfg(windows)]
             StratumTransport::TlsOpenSsl(r) => Pin::new(r).poll_write(cx, buf),
         }
     }
@@ -124,7 +111,6 @@ impl AsyncWrite for StratumTransport {
         match self.get_mut() {
             StratumTransport::Tcp(r) => Pin::new(r).poll_flush(cx),
             StratumTransport::TlsRustls(r) => Pin::new(r).poll_flush(cx),
-            #[cfg(windows)]
             StratumTransport::TlsOpenSsl(r) => Pin::new(r).poll_flush(cx),
         }
     }
@@ -133,7 +119,6 @@ impl AsyncWrite for StratumTransport {
         match self.get_mut() {
             StratumTransport::Tcp(r) => Pin::new(r).poll_shutdown(cx),
             StratumTransport::TlsRustls(r) => Pin::new(r).poll_shutdown(cx),
-            #[cfg(windows)]
             StratumTransport::TlsOpenSsl(r) => Pin::new(r).poll_shutdown(cx),
         }
     }
@@ -168,7 +153,6 @@ async fn connect_rustls(
     Ok(tls_stream)
 }
 
-#[cfg(windows)]
 async fn connect_openssl(
     stream: TcpStream,
     server_name: &str,

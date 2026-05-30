@@ -1,6 +1,6 @@
 [package]
 name = "lite-xmr"
-version = "1.1.0"
+version = "1.2.0-alpha.1"
 edition = "2024"
 authors = ["lite-xmr contributors"]
 
@@ -27,6 +27,8 @@ hwlocality = { version = "1.0.0-alpha.12", features = ["vendored"] }
 ureq = "3"
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sha2 = "0.10"
+rayon = "1"
 
 [build-dependencies]
 cc = "1"

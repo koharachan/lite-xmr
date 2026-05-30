@@ -1,9 +1,9 @@
+use rayon::prelude::*;
 use std::ffi::c_void;
 use std::os::raw::{c_uint, c_ulong};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::thread;
 use tracing::debug;
 
 const FLAG_FULL_MEM: u32 = 0x04;
@@ -58,6 +58,19 @@ unsafe extern "C" {
         input_size: usize,
         output: *mut c_void,
     );
+    fn randomx_calculate_hash_first(
+        machine: *mut RandomXVm,
+        temp_hash: *mut u64,
+        input: *const c_void,
+        input_size: usize,
+    );
+    fn randomx_calculate_hash_next(
+        machine: *mut RandomXVm,
+        temp_hash: *mut u64,
+        next_input: *const c_void,
+        next_input_size: usize,
+        output: *mut c_void,
+    );
 }
 
 pub fn recommended_flags() -> u32 {
@@ -87,6 +100,7 @@ fn ensure_header_compat() -> anyhow::Result<()> {
 
 pub struct Dataset {
     ptr: NonNull<RandomXDataset>,
+    algo: String,
 }
 
 unsafe impl Send for Dataset {}
@@ -94,7 +108,15 @@ unsafe impl Sync for Dataset {}
 
 impl Dataset {
     pub fn new(seed: &[u8]) -> anyhow::Result<Arc<Self>> {
+        Self::new_for_algo("rx/0", seed)
+    }
+
+    pub fn new_for_algo(algo: &str, seed: &[u8]) -> anyhow::Result<Arc<Self>> {
         ensure_header_compat()?;
+
+        if !crate::native_bridge::randomx_apply_config(algo) {
+            anyhow::bail!("unsupported RandomX algorithm '{}'", algo);
+        }
 
         if seed.is_empty() {
             anyhow::bail!("RandomX seed is empty");
@@ -113,36 +135,30 @@ impl Dataset {
             .ok_or_else(|| anyhow::anyhow!("failed to allocate RandomX dataset"))?;
 
         let total_items = unsafe { randomx_dataset_item_count() };
-        let workers = thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1)
-            .clamp(1, 64);
-        let chunk = (total_items as usize).div_ceil(workers) as c_ulong;
         let cache_ptr = cache.as_ptr() as usize;
         let dataset_ptr = dataset.as_ptr() as usize;
-        let mut handles = Vec::with_capacity(workers);
-
-        for i in 0..workers {
+        let workers = rayon::current_num_threads().clamp(1, 64);
+        let chunk = (total_items as usize).div_ceil(workers) as c_ulong;
+        (0..workers).into_par_iter().for_each(|i| {
             let start = (i as c_ulong).saturating_mul(chunk);
-            if start >= total_items {
-                break;
+            if start < total_items {
+                let count = (total_items - start).min(chunk);
+                unsafe {
+                    randomx_init_dataset(
+                        dataset_ptr as *mut RandomXDataset,
+                        cache_ptr as *mut RandomXCache,
+                        start,
+                        count,
+                    );
+                }
             }
-            let count = (total_items - start).min(chunk);
-            handles.push(thread::spawn(move || unsafe {
-                randomx_init_dataset(
-                    dataset_ptr as *mut RandomXDataset,
-                    cache_ptr as *mut RandomXCache,
-                    start,
-                    count,
-                );
-            }));
-        }
-        for h in handles {
-            let _ = h.join();
-        }
+        });
         unsafe { randomx_release_cache(cache.as_ptr()) };
 
-        Ok(Arc::new(Dataset { ptr: dataset }))
+        Ok(Arc::new(Dataset {
+            ptr: dataset,
+            algo: algo.to_string(),
+        }))
     }
 }
 
@@ -161,6 +177,9 @@ pub struct Vm {
 
 impl Vm {
     pub fn new(dataset: Arc<Dataset>) -> anyhow::Result<Self> {
+        if !crate::native_bridge::randomx_apply_config(&dataset.algo) {
+            anyhow::bail!("unsupported RandomX algorithm '{}'", dataset.algo);
+        }
         let flags = recommended_flags() | FLAG_FULL_MEM;
         let ptr = NonNull::new(unsafe {
             randomx_create_vm(
@@ -181,18 +200,39 @@ impl Vm {
         })
     }
 
-    /// Correctness-first batch API.
-    ///
-    /// The RandomX first/next/last pipeline is intentionally not used here for now.
-    /// A bad pipeline implementation can produce invalid shares or terrible real-world
-    /// throughput while still looking good in a synthetic benchmark.
     pub fn hash_batch<const N: usize>(
         &self,
         inputs: [&[u8]; N],
         outputs: &mut [[u8; HASH_SIZE]; N],
     ) {
-        for i in 0..N {
-            self.hash_one(inputs[i], &mut outputs[i]);
+        if N == 0 {
+            return;
+        }
+
+        let mut temp_hash = [0u64; 8];
+        unsafe {
+            randomx_calculate_hash_first(
+                self.ptr.as_ptr(),
+                temp_hash.as_mut_ptr(),
+                inputs[0].as_ptr().cast(),
+                inputs[0].len(),
+            );
+            for i in 1..N {
+                randomx_calculate_hash_next(
+                    self.ptr.as_ptr(),
+                    temp_hash.as_mut_ptr(),
+                    inputs[i].as_ptr().cast(),
+                    inputs[i].len(),
+                    outputs[i - 1].as_mut_ptr().cast(),
+                );
+            }
+            randomx_calculate_hash_next(
+                self.ptr.as_ptr(),
+                temp_hash.as_mut_ptr(),
+                inputs[0].as_ptr().cast(),
+                inputs[0].len(),
+                outputs[N - 1].as_mut_ptr().cast(),
+            );
         }
     }
 

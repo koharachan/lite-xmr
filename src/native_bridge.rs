@@ -3,6 +3,7 @@ use std::ffi::CString;
 unsafe extern "C" {
     fn lx_randomx_hash_size() -> usize;
     fn lx_randomx_dataset_max_size() -> u64;
+    fn lx_randomx_apply_config(algo: *const std::os::raw::c_char) -> i32;
     fn lx_rapidjson_minify(
         input: *const std::os::raw::c_char,
         output: *mut std::os::raw::c_char,
@@ -17,6 +18,13 @@ pub fn randomx_hash_size() -> usize {
 
 pub fn randomx_dataset_max_size() -> u64 {
     unsafe { lx_randomx_dataset_max_size() }
+}
+
+pub fn randomx_apply_config(algo: &str) -> bool {
+    let Ok(c_algo) = CString::new(algo) else {
+        return false;
+    };
+    unsafe { lx_randomx_apply_config(c_algo.as_ptr()) == 1 }
 }
 
 pub fn rapidjson_minify(input: &str) -> Option<String> {

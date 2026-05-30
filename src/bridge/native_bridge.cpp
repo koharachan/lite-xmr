@@ -18,6 +18,14 @@ std::uint64_t lx_randomx_dataset_max_size() {
     return RANDOMX_DATASET_MAX_SIZE;
 }
 
+int lx_randomx_apply_config(const char* algo) {
+    if (algo == nullptr || std::strcmp(algo, "rx/0") == 0 || std::strcmp(algo, "randomx") == 0 ||
+        std::strcmp(algo, "randomx/0") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 int lx_rapidjson_minify(const char* input, char* output, std::size_t output_capacity, std::size_t* output_len) {
     if (input == nullptr || output == nullptr || output_len == nullptr || output_capacity == 0) {
         return 0;

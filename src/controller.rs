@@ -99,6 +99,14 @@ impl Controller {
         if let Some(sni) = pool_sni.as_deref() {
             info!("* SNI          {}", sni);
         }
+        if let Some(proxy) = config.socks5.as_deref() {
+            info!("* SOCKS5       {}", proxy);
+        }
+        if config.pool_tls && config.tls_fingerprint.is_none() {
+            warn!(
+                "* TLS          certificate is not verified; use --tls-fingerprint to pin the pool certificate"
+            );
+        }
 
         let stats = Arc::new(MiningStats::new());
 
@@ -120,7 +128,11 @@ impl Controller {
             config.pool_pass.clone(),
             config.pool_tls,
             pool_sni,
+            config.tls_allow_12,
+            config.tls_fingerprint.clone(),
+            config.socks5.clone(),
             config.user_agent.clone(),
+            config.miner_signature.clone(),
             config.http2,
             config.http3,
             config.ws,

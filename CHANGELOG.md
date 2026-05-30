@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0-alpha.1 - 2026-05-30
+
+- Added opt-in TLS 1.2 compatibility for older pools and TLS terminators.
+- Added SHA-256 TLS certificate fingerprint pinning plus a runtime warning when TLS is unpinned.
+- Added no-auth SOCKS5 proxy support and optional miner signature login parameter support.
+- Re-enabled RandomX pipeline batch hashing and moved full dataset initialization to Rayon.
+- Kept RandomX algorithm validation strict to avoid silently mining unsupported variants with the wrong configuration.
+- Updated troubleshooting and performance guidance for alpha validation.
+
 ## 1.1.0 - 2026-05-28
 
 - Split the application entrypoint into `app` modules for logging, daemon mode, and benchmark startup.

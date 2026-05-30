@@ -57,23 +57,31 @@ impl RxDatasetCache {
         }
     }
 
-    fn get_or_build(&self, seed: &str, seed_bytes: &[u8]) -> Option<Arc<randomx::Dataset>> {
+    fn get_or_build(
+        &self,
+        algo: &str,
+        seed: &str,
+        seed_bytes: &[u8],
+    ) -> Option<Arc<randomx::Dataset>> {
+        let cache_key = format!("{}:{}", algo, seed);
         let mut state = self.state.lock().unwrap();
         loop {
             match &*state {
                 DatasetState::Ready {
                     seed: cached_seed,
                     dataset,
-                } if cached_seed == seed => return Some(dataset.clone()),
-                DatasetState::Failed { seed: failed_seed } if failed_seed == seed => return None,
+                } if cached_seed == &cache_key => return Some(dataset.clone()),
+                DatasetState::Failed { seed: failed_seed } if failed_seed == &cache_key => {
+                    return None;
+                }
                 DatasetState::Building {
                     seed: building_seed,
-                } if building_seed == seed => {
+                } if building_seed == &cache_key => {
                     state = self.ready.wait(state).unwrap();
                 }
                 _ => {
                     *state = DatasetState::Building {
-                        seed: seed.to_string(),
+                        seed: cache_key.clone(),
                     };
                     break;
                 }
@@ -82,31 +90,35 @@ impl RxDatasetCache {
         drop(state);
 
         let started = Instant::now();
-        info!("RandomX dataset initializing seed={} ...", short_seed(seed));
-        let dataset = build_full_dataset(seed_bytes);
+        info!(
+            "RandomX dataset initializing algo={} seed={} ...",
+            algo,
+            short_seed(seed)
+        );
+        let dataset = build_full_dataset(algo, seed_bytes);
 
         let mut state = self.state.lock().unwrap();
         match dataset {
             Ok(dataset) => {
                 *state = DatasetState::Ready {
-                    seed: seed.to_string(),
+                    seed: cache_key,
                     dataset: dataset.clone(),
                 };
                 self.ready.notify_all();
                 info!(
-                    "RandomX dataset ready seed={} ({:.1}s)",
+                    "RandomX dataset ready algo={} seed={} ({:.1}s)",
+                    algo,
                     short_seed(seed),
                     started.elapsed().as_secs_f64()
                 );
                 Some(dataset)
             }
             Err(e) => {
-                *state = DatasetState::Failed {
-                    seed: seed.to_string(),
-                };
+                *state = DatasetState::Failed { seed: cache_key };
                 self.ready.notify_all();
                 error!(
-                    "RandomX dataset init failed seed={}: {}; falling back to light mode",
+                    "RandomX dataset init failed algo={} seed={}: {}; falling back to light mode",
+                    algo,
                     short_seed(seed),
                     e
                 );
@@ -116,8 +128,8 @@ impl RxDatasetCache {
     }
 }
 
-fn build_full_dataset(seed_bytes: &[u8]) -> anyhow::Result<Arc<randomx::Dataset>> {
-    randomx::Dataset::new(seed_bytes)
+fn build_full_dataset(algo: &str, seed_bytes: &[u8]) -> anyhow::Result<Arc<randomx::Dataset>> {
+    randomx::Dataset::new_for_algo(algo, seed_bytes)
 }
 
 fn short_seed(seed: &str) -> &str {
@@ -211,6 +223,7 @@ fn worker_loop_sync(
     debug!("Worker #{} started", worker_id);
 
     let mut current_seed: Option<String> = None;
+    let mut current_algo: Option<String> = None;
     let mut vm: Option<randomx::Vm> = None;
     let mut current_job: Option<Job> = None;
     let mut nonce: u32 = worker_id;
@@ -247,17 +260,18 @@ fn worker_loop_sync(
         };
 
         let seed = job.seed_hash.clone().unwrap_or_default();
-        if current_seed.as_ref() != Some(&seed) {
+        if current_seed.as_ref() != Some(&seed) || current_algo.as_ref() != Some(&job.algo) {
             debug!("Worker #{} new seed, initializing RandomX", worker_id);
             let seed_bytes = match hex::decode(&seed) {
                 Ok(b) if !b.is_empty() => b,
                 _ => vec![0u8; 32],
             };
 
-            match create_randomx_vm(&seed, &seed_bytes, &dataset_cache) {
+            match create_randomx_vm(&job.algo, &seed, &seed_bytes, &dataset_cache) {
                 Ok(new_vm) => {
                     vm = Some(new_vm);
                     current_seed = Some(seed);
+                    current_algo = Some(job.algo.clone());
                     debug!("Worker #{} RandomX ready", worker_id);
                 }
                 Err(e) => {
@@ -283,12 +297,13 @@ fn worker_loop_sync(
 }
 
 fn create_randomx_vm(
+    algo: &str,
     seed: &str,
     seed_bytes: &[u8],
     dataset_cache: &RxDatasetCache,
 ) -> anyhow::Result<randomx::Vm> {
     let dataset = dataset_cache
-        .get_or_build(seed, seed_bytes)
+        .get_or_build(algo, seed, seed_bytes)
         .ok_or_else(|| anyhow::anyhow!("failed to initialize RandomX dataset"))?;
     randomx::Vm::new(dataset)
 }

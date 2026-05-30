@@ -4,7 +4,7 @@
 
 <img src="icon.png" alt="lite-xmr icon" width="512">
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0--alpha.1-blue)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
@@ -48,6 +48,12 @@ Use `--tls` for those pools:
 lite-xmr -o HOST:PORT -u YOUR_WALLET -p x --tls
 ```
 
+TLS 1.2-only endpoints are supported by opting in to legacy protocol negotiation:
+
+```powershell
+lite-xmr -o 156.226.168.60:36807 -u YOUR_WALLET -p x --tls --tls-allow-12
+```
+
 Connection-only test, with debug logs and no mining:
 
 ```bash
@@ -62,7 +68,17 @@ If the TCP address and TLS virtual host need to differ, override the SNI server 
 lite-xmr -o x.x.x.x:443 -u YOUR_WALLET --tls --sni proxy.example.com
 ```
 
-Security note: the current compatibility path accepts self-signed or otherwise untrusted pool certificates. Only connect to pools or proxies you trust.
+Security note: for XMRig-style pool compatibility, lite-xmr still accepts self-signed or otherwise untrusted pool certificates unless a certificate pin is provided. Use `--tls-fingerprint <SHA256>` to verify the pool certificate fingerprint and prevent silent man-in-the-middle redirection.
+
+```powershell
+lite-xmr -o HOST:PORT -u YOUR_WALLET --tls --tls-fingerprint AA:BB:CC:...
+```
+
+If your pool is reachable only through a local or remote SOCKS5 proxy:
+
+```powershell
+lite-xmr -o HOST:PORT -u YOUR_WALLET --tls --socks5 127.0.0.1:1080
+```
 
 ## Quick Start
 
@@ -97,7 +113,11 @@ lite-xmr --bench 30
 | `-p, --pass <STRING>` | Pool password, defaulting to `x` when omitted. |
 | `-t, --threads <N>` | Mining threads. `0` means automatic thread planning. |
 | `--tls` | Force TLS for the pool connection. |
+| `--tls-allow-12` | Allow TLS 1.2 when connecting to older pools or TLS terminators. |
+| `--tls-fingerprint <SHA256>` | Pin the pool certificate by SHA-256 fingerprint. Colons are accepted. |
 | `--sni <HOST>` | Override the TLS SNI server name sent during handshake. |
+| `--socks5 <HOST:PORT>` | Connect to the pool through a no-auth SOCKS5 proxy. |
+| `--miner-signature <SIG>` | Include `sig` in Stratum login params for pools that require miner signatures. |
 | `-ua, --ua <MODE>` | Select the Stratum login User-Agent preset. |
 | `--http2` | Add `http2: true` to the Stratum login params. |
 | `--http3` | Add `http3: true` to the Stratum login params. |
@@ -121,10 +141,10 @@ lite-xmr --bench 30
 | --- | --- |
 | default | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64)` |
 | edge | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0` |
-| full | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.1.0 rust/2022` |
+| full | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.2.0-alpha.1 rust/2022` |
 | xmrig | `XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022` |
-| fast | `lite-xmr/1.1.0 rust/2022` |
-| short | `lite-xmr/1.1.0` |
+| fast | `lite-xmr/1.2.0-alpha.1 rust/2022` |
+| short | `lite-xmr/1.2.0-alpha.1` |
 | sogo | `Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.221 Safari/537.36 SE 2.X MetaSr 1.0` |
 | ie11 | `Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko` |
 
@@ -312,6 +332,13 @@ lite-xmr --bench 30 -t 4
 lite-xmr --bench 30 -t 8
 lite-xmr --bench 30 -t 12 --use-e-cores
 ```
+
+Performance checklist:
+
+- Run from an elevated shell on Windows when testing huge-page allocation behavior.
+- Keep one mining thread per physical core as the first baseline, then compare `--use-e-cores` separately on hybrid CPUs.
+- Close memory-heavy apps before dataset initialization; RandomX full mode needs roughly 2 GiB for the shared dataset plus scratchpads.
+- Compare changes with `--bench 30` after each setting so noisy pool-side share timing does not hide local hashrate changes.
 
 ### Windows build cannot find MSVC tools
 

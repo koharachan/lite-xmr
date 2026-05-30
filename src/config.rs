@@ -19,7 +19,11 @@ pub struct Args {
     pub pass: Option<String>,
     pub threads: Option<u32>,
     pub tls: bool,
+    pub tls_allow_12: bool,
+    pub tls_fingerprint: Option<String>,
     pub sni: Option<String>,
+    pub socks5: Option<String>,
+    pub miner_signature: Option<String>,
     pub user_agent: Option<String>,
     pub http2: bool,
     pub http3: bool,
@@ -59,7 +63,11 @@ impl Args {
             pass: pargs.opt_value_from_str(["-p", "--pass"])?,
             threads: pargs.opt_value_from_str(["-t", "--threads"])?,
             tls: pargs.contains("--tls"),
+            tls_allow_12: pargs.contains("--tls-allow-12"),
+            tls_fingerprint: pargs.opt_value_from_str("--tls-fingerprint")?,
             sni: pargs.opt_value_from_str("--sni")?,
+            socks5: pargs.opt_value_from_str("--socks5")?,
+            miner_signature: pargs.opt_value_from_str("--miner-signature")?,
             user_agent,
             http2: pargs.contains("--http2"),
             http3: pargs.contains("--http3"),
@@ -117,7 +125,11 @@ fn print_usage() {
     println!("  -p, --pass <STRING>             Pool password (default: x)");
     println!("  -t, --threads <N>               Mining threads (0 = auto)");
     println!("      --tls                       Use TLS for pool connection");
+    println!("      --tls-allow-12              Allow TLS 1.2 pool handshakes");
+    println!("      --tls-fingerprint <SHA256>  Verify server certificate fingerprint");
     println!("      --sni <HOST>                Override TLS SNI server name");
+    println!("      --socks5 <HOST:PORT>        Connect through a SOCKS5 proxy");
+    println!("      --miner-signature <SIG>     Include miner signature in login params");
     println!(
         "  -ua, --ua <MODE>                User-Agent preset: default, edge, full, xmrig, fast, short, sogo, ie11"
     );
@@ -147,8 +159,16 @@ pub struct PoolConfig {
     pub enabled: bool,
     #[serde(default)]
     pub tls: bool,
+    #[serde(default, alias = "tls-allow-12", alias = "tls_allow_12")]
+    pub tls_allow_12: bool,
+    #[serde(default, alias = "tls-fingerprint", alias = "tls_fingerprint")]
+    pub tls_fingerprint: Option<String>,
     #[serde(default, deserialize_with = "deserialize_pool_sni")]
     pub sni: Option<PoolSni>,
+    #[serde(default)]
+    pub socks5: Option<String>,
+    #[serde(default, alias = "miner-signature", alias = "miner_signature")]
+    pub miner_signature: Option<String>,
     #[serde(default, alias = "user-agent", alias = "user_agent")]
     pub ua: Option<String>,
     #[serde(default)]
@@ -307,7 +327,11 @@ pub struct Config {
     pub pool_user: String,
     pub pool_pass: String,
     pub pool_tls: bool,
+    pub tls_allow_12: bool,
+    pub tls_fingerprint: Option<String>,
     pub pool_sni: Option<String>,
+    pub socks5: Option<String>,
+    pub miner_signature: Option<String>,
     pub user_agent: String,
     pub http2: bool,
     pub http3: bool,
@@ -411,13 +435,26 @@ impl Config {
                 .and_then(|c| c.background)
                 .unwrap_or(false);
         let pool_sni = resolve_pool_sni(args.sni.clone(), pool, &pool_url);
+        let tls_fingerprint = first_non_empty(
+            args.tls_fingerprint.clone(),
+            pool.and_then(|p| p.tls_fingerprint.clone()),
+        );
+        let socks5 = first_non_empty(args.socks5.clone(), pool.and_then(|p| p.socks5.clone()));
+        let miner_signature = first_non_empty(
+            args.miner_signature.clone(),
+            pool.and_then(|p| p.miner_signature.clone()),
+        );
 
         Ok(Config {
             pool_url,
             pool_user,
             pool_pass,
             pool_tls: args.tls || pool.map(|p| p.tls).unwrap_or(false) || inferred_tls,
+            tls_allow_12: args.tls_allow_12 || pool.map(|p| p.tls_allow_12).unwrap_or(false),
+            tls_fingerprint,
             pool_sni,
+            socks5,
+            miner_signature,
             user_agent: resolve_user_agent(
                 args.user_agent
                     .clone()
@@ -633,7 +670,11 @@ mod tests {
             pass: None,
             threads: None,
             tls: false,
+            tls_allow_12: false,
+            tls_fingerprint: None,
             sni: None,
+            socks5: None,
+            miner_signature: None,
             user_agent: None,
             http2: false,
             http3: false,
@@ -713,10 +754,12 @@ mod tests {
                         "keepalive": 30,
                         "enabled": true,
                         "tls": true,
+                        "tls-allow-12": true,
                         "sni": true,
                         "tls-fingerprint": null,
-                        "daemon": false,
                         "socks5": null,
+                        "miner-signature": null,
+                        "daemon": false,
                         "self-select": null,
                         "submit-to-origin": false
                     }
@@ -734,6 +777,7 @@ mod tests {
         assert_eq!(config.pool_user, "wallet");
         assert_eq!(config.pool_pass, "worker");
         assert!(config.pool_tls);
+        assert!(config.tls_allow_12);
         assert_eq!(config.pool_sni.as_deref(), Some("auto.c3pool.org"));
         assert_eq!(config.user_agent, "Custom/XMRig-Compatible Agent");
         assert!(config.keepalive);
@@ -754,7 +798,11 @@ mod tests {
             pass: None,
             enabled: true,
             tls: true,
+            tls_allow_12: false,
+            tls_fingerprint: None,
             sni: Some(PoolSni::Name("proxy.example.com".to_string())),
+            socks5: None,
+            miner_signature: None,
             ua: None,
             http2: false,
             http3: false,

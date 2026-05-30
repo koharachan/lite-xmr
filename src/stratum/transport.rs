@@ -4,7 +4,9 @@ use std::task::{Context, Poll};
 
 #[cfg(windows)]
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 #[cfg(windows)]
 use tokio_openssl::SslStream as OpenSslTlsStream;
@@ -24,16 +26,26 @@ impl StratumTransport {
         addr: &str,
         use_tls: bool,
         sni_override: Option<&str>,
+        tls_allow_12: bool,
+        tls_fingerprint: Option<&str>,
+        socks5: Option<&str>,
     ) -> anyhow::Result<Self> {
         let endpoint = parse_pool_endpoint(addr, sni_override)?;
-        let stream = TcpStream::connect(&endpoint.connect_addr).await?;
+        let stream = connect_tcp(&endpoint, socks5).await?;
         debug!("TCP connected {}", endpoint.connect_addr);
 
         if !use_tls {
             return Ok(StratumTransport::Tcp(stream));
         }
 
-        match connect_rustls(stream, &endpoint.tls_server_name).await {
+        match connect_rustls(
+            stream,
+            &endpoint.tls_server_name,
+            tls_allow_12,
+            tls_fingerprint,
+        )
+        .await
+        {
             Ok(tls_stream) => {
                 info!(
                     "TLS connected via rustls {} sni={} overridden={}",
@@ -49,10 +61,15 @@ impl StratumTransport {
                         endpoint.connect_addr, rustls_err
                     );
 
-                    let stream = TcpStream::connect(&endpoint.connect_addr).await?;
-                    let tls_stream =
-                        connect_openssl(stream, &endpoint.tls_server_name, endpoint.sni_overridden)
-                            .await?;
+                    let stream = connect_tcp(&endpoint, socks5).await?;
+                    let tls_stream = connect_openssl(
+                        stream,
+                        &endpoint.tls_server_name,
+                        endpoint.sni_overridden,
+                        tls_allow_12,
+                        tls_fingerprint,
+                    )
+                    .await?;
                     info!(
                         "TLS connected via OpenSSL {} sni={}",
                         endpoint.connect_addr,
@@ -125,11 +142,19 @@ impl AsyncWrite for StratumTransport {
 async fn connect_rustls(
     stream: TcpStream,
     server_name: &str,
+    tls_allow_12: bool,
+    tls_fingerprint: Option<&str>,
 ) -> anyhow::Result<RustlsTlsStream<TcpStream>> {
+    let versions: &[&'static rustls::SupportedProtocolVersion] = if tls_allow_12 {
+        &[&rustls::version::TLS13, &rustls::version::TLS12]
+    } else {
+        &[&rustls::version::TLS13]
+    };
+    let verifier = PoolCertVerifier::new(tls_fingerprint)?;
     let connector = TlsConnector::from(Arc::new(
-        rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        rustls::ClientConfig::builder_with_protocol_versions(versions)
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+            .with_custom_certificate_verifier(Arc::new(verifier))
             .with_no_client_auth(),
     ));
 
@@ -148,10 +173,16 @@ async fn connect_openssl(
     stream: TcpStream,
     server_name: &str,
     send_sni: bool,
+    tls_allow_12: bool,
+    tls_fingerprint: Option<&str>,
 ) -> anyhow::Result<OpenSslTlsStream<TcpStream>> {
     let mut builder = SslConnector::builder(SslMethod::tls_client())?;
     builder.set_verify(SslVerifyMode::NONE);
-    builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+    builder.set_min_proto_version(Some(if tls_allow_12 {
+        SslVersion::TLS1_2
+    } else {
+        SslVersion::TLS1_3
+    }))?;
     builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
 
     let mut config = builder.build().configure()?;
@@ -161,11 +192,27 @@ async fn connect_openssl(
     let ssl = config.into_ssl(server_name)?;
     let mut tls_stream = OpenSslTlsStream::new(ssl, stream)?;
     Pin::new(&mut tls_stream).connect().await?;
+    if let Some(expected) = Fingerprint::parse_optional(tls_fingerprint)? {
+        let cert = tls_stream
+            .ssl()
+            .peer_certificate()
+            .ok_or_else(|| anyhow::anyhow!("TLS pool did not send a certificate"))?;
+        let actual = sha256_hex(&cert.to_der()?);
+        if actual != expected.hex {
+            anyhow::bail!(
+                "TLS certificate fingerprint mismatch: expected {}, got {}",
+                expected.hex,
+                actual
+            );
+        }
+    }
     Ok(tls_stream)
 }
 
 struct PoolEndpoint {
     connect_addr: String,
+    host: String,
+    port: u16,
     tls_server_name: String,
     sni_overridden: bool,
 }
@@ -220,6 +267,8 @@ fn parse_pool_endpoint(addr: &str, sni_override: Option<&str>) -> anyhow::Result
 
     Ok(PoolEndpoint {
         connect_addr,
+        host,
+        port,
         tls_server_name,
         sni_overridden: sni_override.is_some(),
     })
@@ -231,17 +280,36 @@ fn parse_port(port: &str, raw: &str) -> anyhow::Result<u16> {
 }
 
 #[derive(Debug)]
-struct AcceptAnyCert;
+struct PoolCertVerifier {
+    fingerprint: Option<Fingerprint>,
+}
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+impl PoolCertVerifier {
+    fn new(fingerprint: Option<&str>) -> anyhow::Result<Self> {
+        Ok(Self {
+            fingerprint: Fingerprint::parse_optional(fingerprint)?,
+        })
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for PoolCertVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
         _intermediates: &[rustls::pki_types::CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Some(expected) = &self.fingerprint {
+            let actual = sha256_hex(end_entity.as_ref());
+            if actual != expected.hex {
+                return Err(rustls::Error::General(format!(
+                    "TLS certificate fingerprint mismatch: expected {}, got {}",
+                    expected.hex, actual
+                )));
+            }
+        }
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -270,6 +338,104 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Fingerprint {
+    hex: String,
+}
+
+impl Fingerprint {
+    fn parse_optional(raw: Option<&str>) -> anyhow::Result<Option<Self>> {
+        let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(None);
+        };
+        let hex = raw
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .flat_map(|c| c.to_lowercase())
+            .collect::<String>();
+        if hex.len() != 64 {
+            anyhow::bail!("TLS fingerprint must be a SHA-256 hex digest");
+        }
+        Ok(Some(Self { hex }))
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+async fn connect_tcp(endpoint: &PoolEndpoint, socks5: Option<&str>) -> anyhow::Result<TcpStream> {
+    let Some(proxy) = socks5.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(TcpStream::connect(&endpoint.connect_addr).await?);
+    };
+
+    let mut stream = TcpStream::connect(proxy).await?;
+    socks5_connect(&mut stream, &endpoint.host, endpoint.port).await?;
+    debug!(
+        "SOCKS5 connected via {} to {}",
+        proxy, endpoint.connect_addr
+    );
+    Ok(stream)
+}
+
+async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> anyhow::Result<()> {
+    stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    let mut hello = [0u8; 2];
+    stream.read_exact(&mut hello).await?;
+    if hello != [0x05, 0x00] {
+        anyhow::bail!("SOCKS5 proxy requires unsupported authentication");
+    }
+
+    let mut req = Vec::with_capacity(7 + host.len());
+    req.extend_from_slice(&[0x05, 0x01, 0x00]);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(ip) => {
+                req.push(0x01);
+                req.extend_from_slice(&ip.octets());
+            }
+            std::net::IpAddr::V6(ip) => {
+                req.push(0x04);
+                req.extend_from_slice(&ip.octets());
+            }
+        }
+    } else {
+        let host_bytes = host.as_bytes();
+        if host_bytes.len() > u8::MAX as usize {
+            anyhow::bail!("SOCKS5 host name is too long");
+        }
+        req.push(0x03);
+        req.push(host_bytes.len() as u8);
+        req.extend_from_slice(host_bytes);
+    }
+    req.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&req).await?;
+
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).await?;
+    if head[0] != 0x05 || head[1] != 0x00 {
+        anyhow::bail!("SOCKS5 connect failed with status 0x{:02x}", head[1]);
+    }
+    match head[3] {
+        0x01 => {
+            let mut skip = [0u8; 6];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await?;
+            let mut skip = vec![0u8; len[0] as usize + 2];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x04 => {
+            let mut skip = [0u8; 18];
+            stream.read_exact(&mut skip).await?;
+        }
+        other => anyhow::bail!("SOCKS5 proxy returned invalid address type 0x{:02x}", other),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,7 +456,23 @@ mod tests {
         let endpoint = parse_pool_endpoint("stratum+tls://pool.example:443/path", None).unwrap();
 
         assert_eq!(endpoint.connect_addr, "pool.example:443");
+        assert_eq!(endpoint.host, "pool.example");
+        assert_eq!(endpoint.port, 443);
         assert_eq!(endpoint.tls_server_name, "pool.example");
         assert!(!endpoint.sni_overridden);
+    }
+
+    #[test]
+    fn fingerprint_parser_accepts_colon_separated_sha256() {
+        let parsed = Fingerprint::parse_optional(Some(
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+        ))
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            parsed.hex,
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        );
     }
 }

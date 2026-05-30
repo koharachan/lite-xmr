@@ -27,7 +27,11 @@ pub struct StratumClient {
     pass: String,
     use_tls: bool,
     sni: Option<String>,
+    tls_allow_12: bool,
+    tls_fingerprint: Option<String>,
+    socks5: Option<String>,
     user_agent: String,
+    miner_signature: Option<String>,
     http2: bool,
     http3: bool,
     ws: bool,
@@ -42,7 +46,11 @@ impl StratumClient {
         pass: String,
         use_tls: bool,
         sni: Option<String>,
+        tls_allow_12: bool,
+        tls_fingerprint: Option<String>,
+        socks5: Option<String>,
         user_agent: String,
+        miner_signature: Option<String>,
         http2: bool,
         http3: bool,
         ws: bool,
@@ -53,7 +61,11 @@ impl StratumClient {
             pass,
             use_tls,
             sni,
+            tls_allow_12,
+            tls_fingerprint,
+            socks5,
             user_agent,
+            miner_signature,
             http2,
             http3,
             ws,
@@ -118,9 +130,16 @@ impl StratumClient {
         shutdown_rx: &mut watch::Receiver<bool>,
         keepalive: bool,
     ) -> Result<()> {
-        let transport = StratumTransport::connect(&self.url, self.use_tls, self.sni.as_deref())
-            .await
-            .map_err(|e| Error::Network(e.to_string()))?;
+        let transport = StratumTransport::connect(
+            &self.url,
+            self.use_tls,
+            self.sni.as_deref(),
+            self.tls_allow_12,
+            self.tls_fingerprint.as_deref(),
+            self.socks5.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::Network(e.to_string()))?;
         let (reader, mut writer) = tokio::io::split(transport);
         let mut lines = BufReader::new(reader).lines();
 
@@ -129,6 +148,7 @@ impl StratumClient {
             &self.user,
             &self.pass,
             &self.user_agent,
+            self.miner_signature.as_deref(),
             self.http2,
             self.http3,
             self.ws,
@@ -360,6 +380,7 @@ fn build_login(
     user: &str,
     pass: &str,
     user_agent: &str,
+    miner_signature: Option<&str>,
     http2: bool,
     http3: bool,
     ws: bool,
@@ -372,6 +393,9 @@ fn build_login(
         "algo": SUPPORTED_ALGOS,
     });
 
+    if let Some(sig) = miner_signature.map(str::trim).filter(|s| !s.is_empty()) {
+        params["sig"] = serde_json::Value::String(sig.to_string());
+    }
     if http2 {
         params["http2"] = serde_json::Value::Bool(true);
     }
@@ -459,12 +483,33 @@ mod tests {
 
     #[test]
     fn login_can_advertise_http3_and_ws_capabilities() {
-        let msg = build_login("wallet", "x", "agent", true, true, true, 7);
+        let msg = build_login(
+            "wallet",
+            "x",
+            "agent",
+            Some("signature"),
+            true,
+            true,
+            true,
+            7,
+        );
         let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
         let params = value.get("params").unwrap();
 
         assert_eq!(params.get("http2").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(params.get("http3").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(params.get("ws").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            params.get("sig").and_then(|v| v.as_str()),
+            Some("signature")
+        );
+    }
+
+    #[test]
+    fn supports_monero_randomx_aliases() {
+        for algo in ["rx/0", "randomx", "randomx/0"] {
+            assert!(is_supported_algo(algo));
+        }
+        assert!(!is_supported_algo("rx/wow"));
     }
 }

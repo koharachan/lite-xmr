@@ -1,0 +1,99 @@
+name: Release Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload assets to, for example v1.2.0"
+        required: true
+        type: string
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    name: Build Linux x86_64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "release tag is empty" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            nasm \
+            ninja-build \
+            perl \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release-${{ steps.release.outputs.tag }}
+
+      - name: Test
+        shell: bash
+        run: cargo test --release
+
+      - name: Build
+        shell: bash
+        run: cargo build --release
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${{ steps.release.outputs.version }}"
+          name="lite-xmr-v${version}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/lite-xmr "dist/$name/lite-xmr"
+          cp README.md CHANGELOG.md LICENSE "dist/$name/"
+
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha256=dist/$name.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        shell: bash
+        run: |
+          gh release upload "$TAG" "$ARCHIVE" "$SHA256" --clobber
+

@@ -1,5 +1,6 @@
 use pico_args::Arguments;
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -24,6 +25,8 @@ pub struct Args {
     pub sni: Option<String>,
     pub socks5: Option<String>,
     pub miner_signature: Option<String>,
+    pub daemon_rpc: bool,
+    pub daemon_rpc_login: Option<String>,
     pub user_agent: Option<String>,
     pub http2: bool,
     pub http3: bool,
@@ -35,6 +38,9 @@ pub struct Args {
     pub doh: bool,
     pub background: bool,
     pub bench_seconds: Option<u64>,
+    pub rebench_algo: bool,
+    pub bench_algo_time: Option<u64>,
+    pub algo_min_time: Option<u64>,
     pub use_e_cores: bool,
     pub verbose: bool,
 }
@@ -68,6 +74,8 @@ impl Args {
             sni: pargs.opt_value_from_str("--sni")?,
             socks5: pargs.opt_value_from_str("--socks5")?,
             miner_signature: pargs.opt_value_from_str("--miner-signature")?,
+            daemon_rpc: pargs.contains("--daemon-rpc") || pargs.contains("--daemon"),
+            daemon_rpc_login: pargs.opt_value_from_str("--daemon-rpc-login")?,
             user_agent,
             http2: pargs.contains("--http2"),
             http3: pargs.contains("--http3"),
@@ -79,6 +87,9 @@ impl Args {
             doh: pargs.contains("--doh"),
             background: pargs.contains(["-B", "--background"]),
             bench_seconds: pargs.opt_value_from_str("--bench")?,
+            rebench_algo: pargs.contains("--rebench-algo"),
+            bench_algo_time: pargs.opt_value_from_str("--bench-algo-time")?,
+            algo_min_time: pargs.opt_value_from_str("--algo-min-time")?,
             use_e_cores: pargs.contains("--use-e-cores"),
             verbose: pargs.contains(["-V", "--verbose"]),
         };
@@ -130,6 +141,8 @@ fn print_usage() {
     println!("      --sni <HOST>                Override TLS SNI server name");
     println!("      --socks5 <HOST:PORT>        Connect through a SOCKS5 proxy");
     println!("      --miner-signature <SIG>     Include miner signature in login params");
+    println!("      --daemon, --daemon-rpc      Mine solo through monerod JSON-RPC");
+    println!("      --daemon-rpc-login <U:P>    Basic auth for remote monerod RPC");
     println!(
         "  -ua, --ua <MODE>                User-Agent preset: default, edge, full, xmrig, fast, short, sogo, ie11"
     );
@@ -143,6 +156,9 @@ fn print_usage() {
     println!("  -k, --keepalive                 Keep connection alive (no mining)");
     println!("      --doh                       Resolve pool host via DoH");
     println!("  -B, --background                Run in background mode");
+    println!("      --rebench-algo              Refresh auto-pool algo performance data");
+    println!("      --bench-algo-time <SECONDS> Per-algo benchmark duration");
+    println!("      --algo-min-time <SECONDS>   Request minimum auto-pool algo runtime");
     println!("  -h, --help                      Show this help");
     println!("  -v, --version                   Show version");
 }
@@ -169,6 +185,10 @@ pub struct PoolConfig {
     pub socks5: Option<String>,
     #[serde(default, alias = "miner-signature", alias = "miner_signature")]
     pub miner_signature: Option<String>,
+    #[serde(default, alias = "daemon-rpc", alias = "daemon_rpc")]
+    pub daemon_rpc: bool,
+    #[serde(default, alias = "daemon-rpc-login", alias = "daemon_rpc_login")]
+    pub daemon_rpc_login: Option<String>,
     #[serde(default, alias = "user-agent", alias = "user_agent")]
     pub ua: Option<String>,
     #[serde(default)]
@@ -181,6 +201,10 @@ pub struct PoolConfig {
     pub keepalive: bool,
     #[serde(default)]
     pub doh: bool,
+    #[serde(default, alias = "algo-perf", alias = "algo_perf")]
+    pub algo_perf: BTreeMap<String, f64>,
+    #[serde(default, alias = "algo-min-time", alias = "algo_min_time")]
+    pub algo_min_time: Option<u64>,
 }
 
 fn default_pool_enabled() -> bool {
@@ -318,6 +342,18 @@ pub struct FileConfig {
 
     #[serde(default)]
     pub use_e_cores: Option<bool>,
+
+    #[serde(default, alias = "algo-perf", alias = "algo_perf")]
+    pub algo_perf: BTreeMap<String, f64>,
+
+    #[serde(default, alias = "rebench-algo", alias = "rebench_algo")]
+    pub rebench_algo: Option<bool>,
+
+    #[serde(default, alias = "bench-algo-time", alias = "bench_algo_time")]
+    pub bench_algo_time: Option<u64>,
+
+    #[serde(default, alias = "algo-min-time", alias = "algo_min_time")]
+    pub algo_min_time: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +368,8 @@ pub struct Config {
     pub pool_sni: Option<String>,
     pub socks5: Option<String>,
     pub miner_signature: Option<String>,
+    pub daemon_rpc: bool,
+    pub daemon_rpc_login: Option<String>,
     pub user_agent: String,
     pub http2: bool,
     pub http3: bool,
@@ -343,6 +381,10 @@ pub struct Config {
     pub doh: bool,
     pub background: bool,
     pub use_e_cores: bool,
+    pub algo_perf: BTreeMap<String, f64>,
+    pub rebench_algo: bool,
+    pub bench_algo_time: u64,
+    pub algo_min_time: Option<u64>,
 }
 
 fn first_non_empty(a: Option<String>, b: Option<String>) -> Option<String> {
@@ -398,6 +440,7 @@ impl Config {
         let pool_url = first_non_empty(args.url.clone(), pool.and_then(|p| p.url.clone()))
             .ok_or_else(|| anyhow::anyhow!("missing pool url, use -o/--url/--pool or config"))?;
         let inferred_tls = url_implies_tls(&pool_url);
+        let inferred_daemon_rpc = url_implies_daemon_rpc(&pool_url);
         let inferred_http3 = url_implies_http3(&pool_url);
         let inferred_ws = url_implies_ws(&pool_url);
 
@@ -444,6 +487,31 @@ impl Config {
             args.miner_signature.clone(),
             pool.and_then(|p| p.miner_signature.clone()),
         );
+        let daemon_rpc_login = first_non_empty(
+            args.daemon_rpc_login.clone(),
+            pool.and_then(|p| p.daemon_rpc_login.clone()),
+        );
+        let mut algo_perf = file_cfg
+            .as_ref()
+            .map(|c| c.algo_perf.clone())
+            .unwrap_or_default();
+        if let Some(pool_perf) = pool.map(|p| p.algo_perf.clone()) {
+            algo_perf.extend(pool_perf);
+        }
+        let rebench_algo = args.rebench_algo
+            || file_cfg
+                .as_ref()
+                .and_then(|c| c.rebench_algo)
+                .unwrap_or(false);
+        let bench_algo_time = args
+            .bench_algo_time
+            .or_else(|| file_cfg.as_ref().and_then(|c| c.bench_algo_time))
+            .unwrap_or(20)
+            .max(1);
+        let algo_min_time = args
+            .algo_min_time
+            .or_else(|| pool.and_then(|p| p.algo_min_time))
+            .or_else(|| file_cfg.as_ref().and_then(|c| c.algo_min_time));
 
         Ok(Config {
             pool_url,
@@ -455,6 +523,10 @@ impl Config {
             pool_sni,
             socks5,
             miner_signature,
+            daemon_rpc: args.daemon_rpc
+                || pool.map(|p| p.daemon_rpc).unwrap_or(false)
+                || inferred_daemon_rpc,
+            daemon_rpc_login,
             user_agent: resolve_user_agent(
                 args.user_agent
                     .clone()
@@ -478,6 +550,10 @@ impl Config {
                     .as_ref()
                     .and_then(|c| c.use_e_cores)
                     .unwrap_or(false),
+            algo_perf,
+            rebench_algo,
+            bench_algo_time,
+            algo_min_time,
         })
     }
 }
@@ -622,6 +698,28 @@ fn url_implies_tls(url: &str) -> bool {
         || lower.starts_with("h3://")
 }
 
+fn url_implies_daemon_rpc(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("daemon+http://")
+        || lower.starts_with("daemon+https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || parse_host_port_like(url)
+            .is_some_and(|(_, port)| matches!(port, 18081 | 18089 | 28081 | 38081))
+}
+
+fn parse_host_port_like(url: &str) -> Option<(&str, u16)> {
+    let raw = url.trim();
+    if raw.is_empty() || raw.contains("://") {
+        return None;
+    }
+    let (host, port) = raw.rsplit_once(':')?;
+    if host.is_empty() || host.contains(':') {
+        return None;
+    }
+    Some((host, port.parse::<u16>().ok()?))
+}
+
 fn url_implies_http3(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("http3://") || lower.starts_with("h3://")
@@ -675,6 +773,8 @@ mod tests {
             sni: None,
             socks5: None,
             miner_signature: None,
+            daemon_rpc: false,
+            daemon_rpc_login: None,
             user_agent: None,
             http2: false,
             http3: false,
@@ -686,6 +786,9 @@ mod tests {
             doh: false,
             background: false,
             bench_seconds: None,
+            rebench_algo: false,
+            bench_algo_time: None,
+            algo_min_time: None,
             use_e_cores: false,
             verbose: false,
         }
@@ -761,9 +864,16 @@ mod tests {
                         "miner-signature": null,
                         "daemon": false,
                         "self-select": null,
-                        "submit-to-origin": false
+                        "submit-to-origin": false,
+                        "algo-perf": {
+                            "rx/0": 488.0,
+                            "cn/r": -1.0
+                        },
+                        "algo-min-time": 45
                     }
-                ]
+                ],
+                "rebench-algo": false,
+                "bench-algo-time": 1
             }"#,
         )
         .unwrap();
@@ -788,6 +898,9 @@ mod tests {
             Some(SocketAddr::from(([127, 0, 0, 1], 18080)))
         );
         assert_eq!(config.log_level, "debug");
+        assert_eq!(config.algo_perf.get("rx/0").copied(), Some(488.0));
+        assert_eq!(config.algo_min_time, Some(45));
+        assert_eq!(config.bench_algo_time, 1);
     }
 
     #[test]
@@ -803,12 +916,16 @@ mod tests {
             sni: Some(PoolSni::Name("proxy.example.com".to_string())),
             socks5: None,
             miner_signature: None,
+            daemon_rpc: false,
+            daemon_rpc_login: None,
             ua: None,
             http2: false,
             http3: false,
             ws: false,
             keepalive: false,
             doh: false,
+            algo_perf: BTreeMap::new(),
+            algo_min_time: None,
         };
 
         assert_eq!(

@@ -142,6 +142,7 @@ pub struct MinedShare {
     pub job_id: String,
     pub nonce: String,
     pub result: String,
+    pub blob: String,
 }
 
 pub struct Miner {
@@ -361,6 +362,7 @@ fn mine_one_batch(
                     job_id: job.job_id.clone(),
                     nonce: job::format_nonce(nonces[i]),
                     result: hex::encode(hashes[i]),
+                    blob: hex::encode(&blobs[i]),
                 };
                 let _ = submit_tx.try_send(share);
             }

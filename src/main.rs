@@ -1,7 +1,9 @@
+mod algorithms;
 mod app;
 mod config;
 mod controller;
 mod cpu;
+mod daemon_rpc;
 mod doh;
 mod error;
 mod job;

@@ -1,15 +1,18 @@
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
+use crate::algorithms;
 use crate::config::Config;
 use crate::cpu::{APP_VERSION, CpuInfo, os_name};
+use crate::daemon_rpc::DaemonRpcClient;
 use crate::doh;
 use crate::job;
-use crate::miner::{MinedShare, Miner};
+use crate::miner::{self, MinedShare, Miner};
 use crate::stats::MiningStats;
 use crate::stratum::{StratumClient, StratumEvent};
 use crate::taskbar::Taskbar;
@@ -41,6 +44,10 @@ impl Controller {
         self.taskbar.set_enabled(true);
 
         self.print_banner();
+
+        if config.daemon_rpc {
+            return self.run_daemon_rpc(config).await;
+        }
 
         let cpu_info = CpuInfo::detect();
         cpu_info.print_summary();
@@ -118,9 +125,36 @@ impl Controller {
             info!("* KEEPALIVE    connection only, mining disabled");
             mpsc::channel::<MinedShare>(1).1
         } else {
-            let miner = Miner::new(mine_threads, worker_pus, stats.clone());
+            let miner = Miner::new(mine_threads, worker_pus.clone(), stats.clone());
             miner.start(job_rx).await
         };
+
+        let mut algo_perf = config.algo_perf.clone();
+        if !config.keepalive
+            && (config.rebench_algo
+                || !algo_perf
+                    .get(algorithms::RX0)
+                    .map(|v| *v > 0.0)
+                    .unwrap_or(false))
+        {
+            info!(
+                "* ALGO BENCH   {} {}s",
+                algorithms::RX0,
+                config.bench_algo_time
+            );
+            match miner::run_benchmark(
+                mine_threads,
+                config.bench_algo_time,
+                Some(worker_pus.as_slice()),
+            ) {
+                Ok(hashrate) if hashrate > 0 => {
+                    algo_perf.insert(algorithms::RX0.to_string(), hashrate as f64);
+                    info!("algo-perf {}={}", algorithms::RX0, hashrate);
+                }
+                Ok(_) => warn!("algo benchmark produced zero hashrate"),
+                Err(e) => warn!("algo benchmark failed: {}", e),
+            }
+        }
 
         let stratum = StratumClient::new(
             pool_url,
@@ -136,6 +170,8 @@ impl Controller {
             config.http2,
             config.http3,
             config.ws,
+            algo_perf,
+            config.algo_min_time,
         );
 
         let keepalive = config.keepalive;
@@ -231,6 +267,150 @@ impl Controller {
         info!("stopped. total hashes: {}", stats.total_hashes());
         Ok(())
     }
+
+    async fn run_daemon_rpc(&mut self, config: &Config) -> anyhow::Result<()> {
+        let cpu_info = CpuInfo::detect();
+        cpu_info.print_summary();
+        let plan = cpu_info.build_thread_plan();
+
+        let planned_pus = if config.use_e_cores {
+            plan.preferred_with_e()
+        } else {
+            plan.preferred_p_only()
+        };
+        let threads = if config.threads == 0 {
+            if planned_pus.is_empty() {
+                cpu_info.recommended_threads()
+            } else {
+                planned_pus.len() as u32
+            }
+        } else {
+            config.threads
+        };
+        let worker_pus = planned_pus
+            .iter()
+            .copied()
+            .take(threads as usize)
+            .collect::<Vec<_>>();
+
+        let daemon = DaemonRpcClient::new(
+            &config.pool_url,
+            &config.pool_user,
+            config.daemon_rpc_login.clone(),
+        );
+        info!("* MODE         daemon RPC solo");
+        info!("* THREADS      {}", threads);
+        info!("* THREAD PLAN  {:?}", worker_pus);
+        info!("* DAEMON RPC   {}", daemon.rpc_url());
+
+        let stats = Arc::new(MiningStats::new());
+        let (job_tx, job_rx) = watch::channel::<Option<job::Job>>(None);
+        let templates = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+        let miner = Miner::new(threads, worker_pus, stats.clone());
+        let mut mined_shares = miner.start(job_rx).await;
+
+        let daemon_for_jobs = daemon.clone();
+        let templates_for_jobs = templates.clone();
+        let job_handle = tokio::spawn(async move {
+            let mut last_job_id = String::new();
+            loop {
+                let client = daemon_for_jobs.clone();
+                match tokio::task::spawn_blocking(move || client.get_block_template()).await {
+                    Ok(Ok(job)) => {
+                        if let Some(template) = job.block_template_blob.clone() {
+                            templates_for_jobs
+                                .lock()
+                                .unwrap()
+                                .insert(job.job_id.clone(), template);
+                        }
+                        if job.job_id != last_job_id {
+                            info!(
+                                "daemon job: id={} height={:?} diff={}",
+                                job.job_id,
+                                job.height,
+                                job.difficulty()
+                            );
+                            last_job_id = job.job_id.clone();
+                            let _ = job_tx.send(Some(job));
+                        }
+                    }
+                    Ok(Err(e)) => warn!("daemon get_block_template failed: {}", e),
+                    Err(e) => warn!("daemon get_block_template task failed: {}", e),
+                }
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+        });
+
+        let stats_clone = stats.clone();
+        let stats_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if stats_clone.total_hashes() == 0 {
+                    continue;
+                }
+                info!(
+                    "speed {} blocks-submitted {} rejected {} uptime {}s",
+                    stats_clone.format_hashrate(),
+                    stats_clone.accepted(),
+                    stats_clone.rejected(),
+                    stats_clone.uptime_secs(),
+                );
+            }
+        });
+
+        let mut shutdown_rx = install_signal_handler();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    info!("shutting down...");
+                    break;
+                }
+                Some(share) = mined_shares.recv() => {
+                    debug!(
+                        "solo candidate: job={} nonce={} hash={}",
+                        share.job_id, share.nonce, share.result
+                    );
+                    let template = templates.lock().unwrap().get(&share.job_id).cloned();
+                    let Some(template) = template else {
+                        stats.record_rejected();
+                        warn!("solo candidate rejected locally: missing block template for {}", share.job_id);
+                        continue;
+                    };
+                    let block_blob = match block_template_with_nonce(&template, &share.nonce) {
+                        Ok(blob) => blob,
+                        Err(e) => {
+                            stats.record_rejected();
+                            warn!("solo candidate rejected locally: {}", e);
+                            continue;
+                        }
+                    };
+                    let client = daemon.clone();
+                    match tokio::task::spawn_blocking(move || client.submit_block(&block_blob)).await {
+                        Ok(Ok(())) => {
+                            stats.record_accepted();
+                            info!("solo block submitted nonce={} hash={}", share.nonce, share.result);
+                        }
+                        Ok(Err(e)) => {
+                            stats.record_rejected();
+                            warn!("solo submit_block rejected: {}", e);
+                        }
+                        Err(e) => {
+                            stats.record_rejected();
+                            warn!("solo submit_block task failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        job_handle.abort();
+        stats_handle.abort();
+        self.taskbar.set_active(false);
+        self.running.store(false, Ordering::Release);
+        info!("stopped. total hashes: {}", stats.total_hashes());
+        Ok(())
+    }
 }
 
 fn install_signal_handler() -> tokio::sync::watch::Receiver<bool> {
@@ -268,4 +448,17 @@ fn parse_pool_host_port(url: &str) -> Option<(String, u16)> {
     }
 
     Some((host.to_string(), port.parse::<u16>().ok()?))
+}
+
+fn block_template_with_nonce(template_hex: &str, nonce_hex: &str) -> anyhow::Result<String> {
+    let mut template = hex::decode(template_hex)?;
+    let nonce = hex::decode(nonce_hex)?;
+    if nonce.len() != 4 {
+        anyhow::bail!("invalid nonce length: {} bytes", nonce.len());
+    }
+    if job::NONCE_OFFSET + 4 > template.len() {
+        anyhow::bail!("block template is too short for nonce offset");
+    }
+    template[job::NONCE_OFFSET..job::NONCE_OFFSET + 4].copy_from_slice(&nonce);
+    Ok(hex::encode(template))
 }

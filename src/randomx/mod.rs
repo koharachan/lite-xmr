@@ -58,19 +58,6 @@ unsafe extern "C" {
         input_size: usize,
         output: *mut c_void,
     );
-    fn randomx_calculate_hash_first(
-        machine: *mut RandomXVm,
-        temp_hash: *mut u64,
-        input: *const c_void,
-        input_size: usize,
-    );
-    fn randomx_calculate_hash_next(
-        machine: *mut RandomXVm,
-        temp_hash: *mut u64,
-        next_input: *const c_void,
-        next_input_size: usize,
-        output: *mut c_void,
-    );
 }
 
 pub fn recommended_flags() -> u32 {
@@ -205,34 +192,8 @@ impl Vm {
         inputs: [&[u8]; N],
         outputs: &mut [[u8; HASH_SIZE]; N],
     ) {
-        if N == 0 {
-            return;
-        }
-
-        let mut temp_hash = [0u64; 8];
-        unsafe {
-            randomx_calculate_hash_first(
-                self.ptr.as_ptr(),
-                temp_hash.as_mut_ptr(),
-                inputs[0].as_ptr().cast(),
-                inputs[0].len(),
-            );
-            for i in 1..N {
-                randomx_calculate_hash_next(
-                    self.ptr.as_ptr(),
-                    temp_hash.as_mut_ptr(),
-                    inputs[i].as_ptr().cast(),
-                    inputs[i].len(),
-                    outputs[i - 1].as_mut_ptr().cast(),
-                );
-            }
-            randomx_calculate_hash_next(
-                self.ptr.as_ptr(),
-                temp_hash.as_mut_ptr(),
-                inputs[0].as_ptr().cast(),
-                inputs[0].len(),
-                outputs[N - 1].as_mut_ptr().cast(),
-            );
+        for i in 0..N {
+            self.hash_one(inputs[i], &mut outputs[i]);
         }
     }
 

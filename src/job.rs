@@ -19,6 +19,8 @@ pub struct Job {
     pub algo: String,
     pub height: Option<u64>,
     pub seed_hash: Option<String>,
+    #[serde(skip)]
+    pub block_template_blob: Option<String>,
 
     #[serde(skip, default = "Vec::new")]
     blob_bytes: Vec<u8>,
@@ -114,6 +116,7 @@ impl Job {
             algo,
             height,
             seed_hash,
+            block_template_blob: None,
             blob_bytes,
             difficulty,
             nicehash,
@@ -165,9 +168,45 @@ impl Job {
             algo,
             height,
             seed_hash,
+            block_template_blob: None,
             blob_bytes,
             difficulty,
             nicehash,
+        })
+    }
+
+    pub fn from_daemon_template(
+        job_id: String,
+        blockhashing_blob: String,
+        block_template_blob: String,
+        difficulty: u64,
+        height: Option<u64>,
+        seed_hash: Option<String>,
+    ) -> Option<Self> {
+        let blob_bytes = match hex::decode(&blockhashing_blob) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("daemon job: invalid block hashing blob hex: {}", e);
+                return None;
+            }
+        };
+
+        if hex::decode(&block_template_blob).is_err() {
+            tracing::warn!("daemon job: invalid block template blob hex");
+            return None;
+        }
+
+        Some(Job {
+            job_id,
+            blob: blockhashing_blob,
+            target: difficulty.to_string(),
+            algo: "rx/0".to_string(),
+            height,
+            seed_hash,
+            block_template_blob: Some(block_template_blob),
+            blob_bytes,
+            difficulty: difficulty.max(1),
+            nicehash: false,
         })
     }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -5,12 +6,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
+use crate::algorithms;
 use crate::error::{Error, Result};
 use crate::job::Job;
 
 use super::transport::StratumTransport;
 
-const SUPPORTED_ALGOS: &[&str] = &["rx/0"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginProfile {
+    Lite,
+    XmrigCompat,
+    Minimal,
+}
+
+impl LoginProfile {
+    fn name(self) -> &'static str {
+        match self {
+            LoginProfile::Lite => "lite",
+            LoginProfile::XmrigCompat => "xmrig-compat",
+            LoginProfile::Minimal => "minimal",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum StratumEvent {
@@ -35,6 +52,8 @@ pub struct StratumClient {
     http2: bool,
     http3: bool,
     ws: bool,
+    algo_perf: BTreeMap<String, f64>,
+    algo_min_time: Option<u64>,
     running: Arc<AtomicBool>,
     request_id: AtomicU64,
 }
@@ -54,6 +73,8 @@ impl StratumClient {
         http2: bool,
         http3: bool,
         ws: bool,
+        algo_perf: BTreeMap<String, f64>,
+        algo_min_time: Option<u64>,
     ) -> Self {
         StratumClient {
             url,
@@ -69,6 +90,8 @@ impl StratumClient {
             http2,
             http3,
             ws,
+            algo_perf: algorithms::filtered_algo_perf(&algo_perf),
+            algo_min_time,
             running: Arc::new(AtomicBool::new(false)),
             request_id: AtomicU64::new(1),
         }
@@ -130,6 +153,51 @@ impl StratumClient {
         shutdown_rx: &mut watch::Receiver<bool>,
         keepalive: bool,
     ) -> Result<()> {
+        let profiles = [
+            LoginProfile::Lite,
+            LoginProfile::XmrigCompat,
+            LoginProfile::Minimal,
+        ];
+        let mut last_error = None;
+
+        for (idx, profile) in profiles.iter().copied().enumerate() {
+            match self
+                .run_session_with_profile(
+                    job_tx,
+                    submit_rx,
+                    event_tx,
+                    shutdown_rx,
+                    keepalive,
+                    profile,
+                )
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) if idx + 1 < profiles.len() && is_login_retryable(&e) => {
+                    warn!(
+                        "pool login with {} profile failed: {}; retrying with {} profile",
+                        profile.name(),
+                        e,
+                        profiles[idx + 1].name()
+                    );
+                    last_error = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| Error::Stratum("pool login failed".into())))
+    }
+
+    async fn run_session_with_profile(
+        &self,
+        job_tx: &mut watch::Sender<Option<Job>>,
+        submit_rx: &mut mpsc::Receiver<(String, String, String)>,
+        event_tx: &mut mpsc::Sender<StratumEvent>,
+        shutdown_rx: &mut watch::Receiver<bool>,
+        keepalive: bool,
+        profile: LoginProfile,
+    ) -> Result<()> {
         let transport = StratumTransport::connect(
             &self.url,
             self.use_tls,
@@ -152,13 +220,21 @@ impl StratumClient {
             self.http2,
             self.http3,
             self.ws,
+            &self.algo_perf,
+            self.algo_min_time,
             login_id,
+            profile,
         );
         writer.write_all(login_msg.as_bytes()).await?;
         writer.flush().await?;
         debug!(
-            "login: id={} agent={:?} http2={} http3={} ws={}",
-            login_id, self.user_agent, self.http2, self.http3, self.ws
+            "login: id={} profile={} agent={:?} http2={} http3={} ws={}",
+            login_id,
+            profile.name(),
+            self.user_agent,
+            self.http2,
+            self.http3,
+            self.ws
         );
 
         loop {
@@ -183,7 +259,7 @@ impl StratumClient {
                         if let Some(job) = Job::from_c3pool_job(job_obj) {
                             if !is_supported_algo(&job.algo) {
                                 warn!(
-                                    "unsupported pool job algo '{}'; lite-xmr currently supports rx/0 only",
+                                    "unsupported pool job algo '{}'; not declared by this build",
                                     job.algo
                                 );
                             } else {
@@ -198,7 +274,11 @@ impl StratumClient {
                     }
                 }
 
-                info!("pool login ok session={}", session_id);
+                info!(
+                    "pool login ok session={} profile={}",
+                    session_id,
+                    profile.name()
+                );
                 let _ = event_tx.send(StratumEvent::Connected).await;
 
                 if keepalive {
@@ -341,7 +421,7 @@ async fn handle_msg(
                     if let Some(job) = Job::from_c3pool_job(params) {
                         if !is_supported_algo(&job.algo) {
                             warn!(
-                                "unsupported pool job algo '{}'; lite-xmr currently supports rx/0 only",
+                                "unsupported pool job algo '{}'; not declared by this build",
                                 job.algo
                             );
                             return Ok(());
@@ -354,6 +434,28 @@ async fn handle_msg(
                         let _ = event_tx.send(StratumEvent::NewJob(job)).await;
                     }
                 }
+            }
+            "mining.notify" => {
+                if let Some(params) = msg.get("params").and_then(|v| v.as_array()) {
+                    if let Some(job) = Job::from_notify(params) {
+                        if !is_supported_algo(&job.algo) {
+                            warn!(
+                                "unsupported pool job algo '{}'; not declared by this build",
+                                job.algo
+                            );
+                            return Ok(());
+                        }
+                        debug!(
+                            "mining.notify: id={} height={:?} algo={}",
+                            job.job_id, job.height, job.algo
+                        );
+                        let _ = job_tx.send(Some(job.clone())).ok();
+                        let _ = event_tx.send(StratumEvent::NewJob(job)).await;
+                    }
+                }
+            }
+            "mining.set_difficulty" => {
+                debug!("method: {}", method);
             }
             _ => debug!("method: {}", method),
         }
@@ -384,15 +486,32 @@ fn build_login(
     http2: bool,
     http3: bool,
     ws: bool,
+    algo_perf: &BTreeMap<String, f64>,
+    algo_min_time: Option<u64>,
     id: u64,
+    profile: LoginProfile,
 ) -> String {
+    let algos = match profile {
+        LoginProfile::Lite | LoginProfile::XmrigCompat => algorithms::SUPPORTED_ALGOS,
+        LoginProfile::Minimal => &[][..],
+    };
+
     let mut params = serde_json::json!({
         "login": user,
         "pass": pass,
         "agent": user_agent,
-        "algo": SUPPORTED_ALGOS,
+        "coin": "monero",
     });
 
+    if !algos.is_empty() {
+        params["algo"] = serde_json::json!(algos);
+    }
+    if !algo_perf.is_empty() {
+        params["algo-perf"] = serde_json::json!(algo_perf);
+    }
+    if let Some(seconds) = algo_min_time.filter(|v| *v > 0) {
+        params["algo-min-time"] = serde_json::json!(seconds);
+    }
     if let Some(sig) = miner_signature.map(str::trim).filter(|s| !s.is_empty()) {
         params["sig"] = serde_json::Value::String(sig.to_string());
     }
@@ -416,6 +535,28 @@ fn build_login(
     format!("{}\n", msg)
 }
 
+fn is_login_retryable(error: &Error) -> bool {
+    match error {
+        Error::Stratum(msg) => {
+            msg.contains("pool closed during login") || msg.contains("login failed")
+        }
+        Error::Network(msg) => {
+            msg.contains("unexpected EOF")
+                || msg.contains("TLS stream closed")
+                || msg.contains("handshake failure")
+        }
+        Error::Io(e) => {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+            )
+        }
+        _ => false,
+    }
+}
+
 fn build_submit(session_id: &str, job_id: &str, nonce: &str, result: &str, id: u64) -> String {
     format!(
         "{{\"id\":{},\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{{\"id\":\"{}\",\"job_id\":\"{}\",\"nonce\":\"{}\",\"result\":\"{}\"}}}}\n",
@@ -424,7 +565,7 @@ fn build_submit(session_id: &str, job_id: &str, nonce: &str, result: &str, id: u
 }
 
 fn is_supported_algo(algo: &str) -> bool {
-    matches!(algo, "rx/0" | "randomx" | "randomx/0")
+    algorithms::is_supported(algo)
 }
 
 fn get_json_error(msg: &serde_json::Value) -> Option<String> {
@@ -483,6 +624,7 @@ mod tests {
 
     #[test]
     fn login_can_advertise_http3_and_ws_capabilities() {
+        let algo_perf = BTreeMap::from([(algorithms::RX0.to_string(), 488.0)]);
         let msg = build_login(
             "wallet",
             "x",
@@ -491,11 +633,15 @@ mod tests {
             true,
             true,
             true,
+            &algo_perf,
+            Some(60),
             7,
+            LoginProfile::Lite,
         );
         let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
         let params = value.get("params").unwrap();
 
+        assert_eq!(params.get("coin").and_then(|v| v.as_str()), Some("monero"));
         assert_eq!(params.get("http2").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(params.get("http3").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(params.get("ws").and_then(|v| v.as_bool()), Some(true));
@@ -503,6 +649,72 @@ mod tests {
             params.get("sig").and_then(|v| v.as_str()),
             Some("signature")
         );
+        assert_eq!(
+            params
+                .get("algo-perf")
+                .and_then(|v| v.get(algorithms::RX0))
+                .and_then(|v| v.as_f64()),
+            Some(488.0)
+        );
+        assert_eq!(
+            params.get("algo-min-time").and_then(|v| v.as_u64()),
+            Some(60)
+        );
+    }
+
+    #[test]
+    fn xmrig_compat_login_only_advertises_real_supported_algos() {
+        let algo_perf = BTreeMap::from([(algorithms::RX0.to_string(), 488.0)]);
+        let msg = build_login(
+            "wallet",
+            "x",
+            "agent",
+            None,
+            false,
+            false,
+            false,
+            &algo_perf,
+            None,
+            8,
+            LoginProfile::XmrigCompat,
+        );
+        let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let algos = value
+            .get("params")
+            .and_then(|p| p.get("algo"))
+            .and_then(|v| v.as_array())
+            .unwrap();
+
+        assert!(algos.iter().any(|v| v.as_str() == Some("rx/0")));
+        assert_eq!(algos.len(), algorithms::SUPPORTED_ALGOS.len());
+        assert!(
+            algos
+                .iter()
+                .all(|v| { v.as_str().map(algorithms::is_supported).unwrap_or(false) })
+        );
+    }
+
+    #[test]
+    fn minimal_login_omits_algo_for_strict_legacy_pools() {
+        let algo_perf = BTreeMap::from([(algorithms::RX0.to_string(), 488.0)]);
+        let msg = build_login(
+            "wallet",
+            "x",
+            "agent",
+            None,
+            false,
+            false,
+            false,
+            &algo_perf,
+            None,
+            9,
+            LoginProfile::Minimal,
+        );
+        let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let params = value.get("params").unwrap();
+
+        assert!(params.get("algo").is_none());
+        assert_eq!(params.get("coin").and_then(|v| v.as_str()), Some("monero"));
     }
 
     #[test]
@@ -511,5 +723,17 @@ mod tests {
             assert!(is_supported_algo(algo));
         }
         assert!(!is_supported_algo("rx/wow"));
+    }
+
+    #[test]
+    fn does_not_declare_unsupported_cpu_auto_algos() {
+        let configured = BTreeMap::from([
+            (algorithms::RX0.to_string(), 488.0),
+            ("cn/r".to_string(), 100.0),
+        ]);
+        let filtered = algorithms::filtered_algo_perf(&configured);
+
+        assert!(filtered.contains_key(algorithms::RX0));
+        assert!(!filtered.contains_key("cn/r"));
     }
 }

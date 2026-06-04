@@ -1,6 +1,6 @@
 [package]
 name = "lite-xmr"
-version = "1.2.0-alpha.2"
+version = "1.2.0"
 edition = "2024"
 authors = ["lite-xmr contributors"]
 

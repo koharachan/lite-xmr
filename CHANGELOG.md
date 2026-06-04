@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 - 2026-06-04
+
+- Promoted the 1.2 line to a stable release.
+- Added daemon RPC solo mining through monerod JSON-RPC endpoints.
+- Added C3Pool/MoneroOcean-style `algo-perf` negotiation for the supported `rx/0` CPU backend.
+- Added automatic short `rx/0` algo benchmark data for auto-pool login.
+- Fixed RandomX batch hashing stability by routing batch work through the safe single-hash API.
+- Kept `dist/` as local release output only; release bundles are no longer tracked by git.
+
 ## 1.2.0-alpha.2 - 2026-05-30
 
 - Extended the OpenSSL TLS fallback to Linux and other platforms, not only Windows.

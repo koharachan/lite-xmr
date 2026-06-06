@@ -167,7 +167,9 @@ The `http3://` and `h3://` URL schemes imply TLS and set the HTTP/3 capability f
 
 XMRig-style `config.json` files are accepted. `lite-xmr` reads the first enabled pool from `pools`, supports XMRig pool keys such as `url`, `user`, `pass`, `enabled`, `tls`, `sni`, and `keepalive`, and maps top-level `http`, `cpu`, `background`, `verbose`, and `user-agent` settings where they match lite-xmr features. XMRig-only GPU, RandomX tuning, daemon, proxy, and TLS certificate fields are ignored safely.
 
-Minimal `config.toml`:
+A sample `config.toml` file is included in the repository with all available options documented.
+
+### Minimal `config.toml`:
 
 ```toml
 [pool]
@@ -177,7 +179,7 @@ pass = "x"
 tls = true
 ```
 
-Private TLS proxy test:
+### Private TLS proxy test:
 
 ```toml
 [pool]
@@ -196,7 +198,7 @@ ws = true
 level = "debug"
 ```
 
-CPU and resolver options:
+### CPU and resolver options:
 
 ```toml
 use_e_cores = false
@@ -209,6 +211,52 @@ doh = true
 
 [cpu]
 threads = 8
+```
+
+### Full Configuration Reference
+
+```toml
+# Global options
+background = false          # Run in background mode
+use_e_cores = false         # Include E-cores in automatic thread planning
+verbose = 0                 # Verbosity level (0=off, >0=debug)
+user_agent = "default"      # Global User-Agent preset
+
+# CPU configuration
+[cpu]
+threads = 0                 # Mining threads (0 = auto)
+max-threads-hint = 100      # Percentage of logical cores to use (0-99)
+
+# Pool configuration
+[pool]
+url = "pool.supportxmr.com:443"  # Pool address
+user = "YOUR_WALLET"             # Wallet address or username
+pass = "x"                       # Pool password
+enabled = true                   # Enable this pool
+tls = true                       # Use TLS encryption
+tls-allow-12 = false             # Allow TLS 1.2 for older pools
+tls-fingerprint = ""             # Certificate fingerprint pinning
+sni = "proxy.example.com"        # TLS SNI override
+socks5 = "127.0.0.1:1080"       # SOCKS5 proxy
+miner-signature = ""             # Miner signature for pools that require it
+daemon-rpc = false               # Solo mining via monerod RPC
+daemon-rpc-login = ""            # RPC basic auth (user:pass)
+ua = "default"                   # User-Agent preset (default, edge, full, xmrig, fast, short, sogo, ie11)
+http2 = false                    # Advertise HTTP/2 support
+http3 = false                    # Advertise HTTP/3 support
+ws = false                       # Advertise WebSocket support
+keepalive = false                # Keep connection alive without mining
+doh = false                      # Use DNS-over-HTTPS resolver
+
+# Logging configuration
+[logging]
+level = "info"                   # Log level (trace, debug, info, warn, error)
+
+# API configuration (XMRig-compatible)
+[http]
+enabled = false                  # Enable HTTP API
+host = "127.0.0.1"              # API bind host
+port = 18080                     # API bind port
 ```
 
 ## Build From Source

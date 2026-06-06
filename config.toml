@@ -1,0 +1,112 @@
+# ==============================================================================
+# lite-xmr 配置文件示例
+# 所有配置项均已列出，根据实际需求取消注释并修改值
+# ==============================================================================
+
+# 是否在后台运行
+# false = 前台运行（默认）
+# true = 后台运行
+# background = false
+
+# 是否在自动线程规划中包含 E-cores（混合 CPU）
+# false = 仅使用 P-cores（默认）
+# true = 同时使用 P-cores 和 E-cores
+# use_e_cores = false
+
+# ==============================================================================
+# CPU 配置
+# ==============================================================================
+[cpu]
+# 挖矿线程数
+# 0 = 自动检测最优线程数（默认）
+# >0 = 指定线程数
+threads = 0
+
+# ==============================================================================
+# 矿池配置
+# ==============================================================================
+[pool]
+# 矿池地址，格式: HOST:PORT
+# 支持的 URL scheme: stratum+tls://, tls://, ssl://, https://, http3://, h3://, ws://, wss://
+url = "pool.supportxmr.com:443"
+
+# 钱包地址或矿池用户名
+user = "YOUR_WALLET_ADDRESS"
+
+# 矿池密码，默认为 "x"
+pass = "x"
+
+# 是否启用 TLS 加密连接
+# false = 不启用（默认）
+# true = 启用 TLS
+tls = true
+
+# TLS SNI 服务器名称覆盖
+# 当 TCP 地址和 TLS 虚拟主机需要不同时使用
+# 例如通过代理连接时
+# sni = "proxy.example.com"
+
+# 是否保持连接但不挖矿（用于测试连接）
+# false = 正常挖矿（默认）
+# true = 仅保持连接
+# keepalive = false
+
+# User-Agent 预设，用于 Stratum login 请求
+# 可选值: default, edge, full, xmrig, fast, short, sogo, ie11
+# default = XMRig/6.26.0 (Windows NT 10.0; Win64; x64)
+# edge = Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ...
+# full = XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022 lite-xmr/1.2.0 rust/2022
+# xmrig = XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022
+# fast = lite-xmr/1.2.0 rust/2022
+# short = lite-xmr/1.2.0
+# sogo = Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 ...
+# ie11 = Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko
+ua = "default"
+
+# 向矿池声明支持 HTTP/2（能力标志）
+# 仅对支持此标志的矿池/代理有效
+# http2 = false
+
+# 向矿池声明支持 HTTP/3（能力标志）
+# 仅对支持此标志的矿池/代理有效
+# http3 = false
+
+# 向矿池声明支持 WebSocket（能力标志）
+# 仅对支持此标志的矿池/代理有效
+# ws = false
+
+# 是否通过内置 DNS-over-HTTPS 解析器解析矿池域名
+# 适用于不稳定的 DNS 环境
+# doh = false
+
+# SOCKS5 代理地址，格式: HOST:PORT
+# 用于通过代理连接矿池（无认证）
+# socks5 = "127.0.0.1:1080"
+
+# 矿工签名，包含在 Stratum login 参数中
+# 某些矿池要求此参数
+# miner_signature = ""
+
+# ==============================================================================
+# 日志配置
+# ==============================================================================
+[logging]
+# 日志级别
+# 可选值: trace, debug, info, warn, error
+# trace = 最详细，包含所有调试信息
+# debug = 详细调试信息（等同于命令行 -V/--verbose）
+# info = 常规信息（默认）
+# warn = 仅警告和错误
+# error = 仅错误
+level = "info"
+
+# ==============================================================================
+# TLS 高级配置
+# ==============================================================================
+# [tls]
+# 允许 TLS 1.2（用于旧版矿池或 TLS 终止器）
+# allow_12 = false
+
+# 矿池证书指纹（SHA-256），用于证书固定
+# 格式: AA:BB:CC:... 或 AABBCC...
+# fingerprint = ""
